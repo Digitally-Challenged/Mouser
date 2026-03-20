@@ -49,6 +49,34 @@ class LogiDeviceRegistryTests(unittest.TestCase):
         self.assertEqual(info.gesture_cids, (0x00F1,))
         self.assertEqual(info.ui_layout, "generic_mouse")
 
+    def test_resolve_mx_master_4_by_product_id(self):
+        device = resolve_device(product_id=0xB042)
+
+        self.assertIsNotNone(device)
+        self.assertEqual(device.key, "mx_master_4")
+        self.assertEqual(device.display_name, "MX Master 4")
+
+    def test_resolve_mx_master_4_by_alias(self):
+        device = resolve_device(product_name="MX Master 4 M")
+
+        self.assertIsNotNone(device)
+        self.assertEqual(device.key, "mx_master_4")
+        self.assertIn(0xB042, device.product_ids)
+
+    def test_build_connected_device_info_mx_master_4(self):
+        info = build_connected_device_info(
+            product_id=0xB042,
+            product_name="MX Master 4 M",
+            transport="Bluetooth Low Energy",
+            source="iokit-enumerate",
+        )
+
+        self.assertEqual(info.display_name, "MX Master 4")
+        self.assertEqual(info.ui_layout, "mx_master")
+        self.assertEqual(info.gesture_cids, DEFAULT_GESTURE_CIDS)
+        self.assertEqual(info.dpi_min, 200)
+        self.assertEqual(info.dpi_max, 8000)
+
     def test_clamp_dpi_uses_known_device_bounds(self):
         info = build_connected_device_info(product_id=0xB019)
 

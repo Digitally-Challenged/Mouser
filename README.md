@@ -40,7 +40,7 @@ _The UI is now device-aware. MX Master-family mice get the interactive diagram; 
 
 | Family / model | Detection + HID++ probing | UI support |
 |---|---|---|
-| MX Master 3S / 3 / 2S / MX Master | Yes | Dedicated interactive `mx_master` layout |
+| MX Master 4 / 3S / 3 / 2S / MX Master | Yes | Dedicated interactive `mx_master` layout |
 | MX Anywhere 3S / 3 / 2S | Yes | Generic fallback card, experimental manual override |
 | MX Vertical | Yes | Generic fallback card |
 | Unknown Logitech HID++ mice | Best effort by PID/name | Generic fallback card |
