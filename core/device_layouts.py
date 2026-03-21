@@ -110,8 +110,28 @@ MX_VERTICAL_LAYOUT = {
 }
 
 
+MX_MASTER_4_LAYOUT = {
+    **MX_MASTER_LAYOUT,
+    "key": "mx_master_4",
+    "label": "MX Master 4",
+    "manual_selectable": True,
+    "hotspots": MX_MASTER_LAYOUT["hotspots"] + [
+        {
+            "buttonKey": "action_ring",
+            "label": "Actions Ring",
+            "summaryType": "mapping",
+            "normX": 0.73,
+            "normY": 0.55,
+            "labelSide": "left",
+            "labelOffX": -250,
+            "labelOffY": 30,
+        },
+    ],
+}
+
 DEVICE_LAYOUTS = {
     "mx_master": MX_MASTER_LAYOUT,
+    "mx_master_4": MX_MASTER_4_LAYOUT,
     "mx_anywhere": MX_ANYWHERE_LAYOUT,
     "mx_vertical": MX_VERTICAL_LAYOUT,
     "generic_mouse": GENERIC_MOUSE_LAYOUT,

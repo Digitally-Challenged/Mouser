@@ -18,11 +18,21 @@ class DeviceLayoutTests(unittest.TestCase):
         self.assertEqual(layout["key"], "generic_mouse")
         self.assertEqual(layout["image_asset"], "icons/mouse-simple.svg")
 
+    def test_mx_master_4_layout_has_action_ring_hotspot(self):
+        layout = get_device_layout("mx_master_4")
+
+        self.assertTrue(layout["interactive"])
+        self.assertEqual(layout["key"], "mx_master_4")
+        button_keys = [h["buttonKey"] for h in layout["hotspots"]]
+        self.assertIn("action_ring", button_keys)
+        self.assertEqual(len(layout["hotspots"]), 6)
+
     def test_manual_choices_include_auto_and_interactive_layouts(self):
         choices = get_manual_layout_choices()
 
         self.assertEqual(choices[0], {"key": "", "label": "Auto-detect"})
         self.assertIn({"key": "mx_master", "label": "MX Master family"}, choices)
+        self.assertIn({"key": "mx_master_4", "label": "MX Master 4"}, choices)
         self.assertNotIn({"key": "mx_anywhere", "label": "MX Anywhere family"}, choices)
 
 

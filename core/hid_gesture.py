@@ -463,7 +463,10 @@ KNOWN_CID_NAMES = {
     0x00C3: "Mouse Gesture Button",
     0x00C4: "Smart Shift",
     0x00D7: "Virtual Gesture Button",
+    0x01A0: "Actions Ring (Haptic)",
 }
+
+ACTION_RING_CID = 0x01A0
 
 KEY_FLAG_BITS = (
     (0x0001, "mse"),
@@ -536,12 +539,15 @@ class HidGestureListener:
     """Background thread: diverts the gesture button and listens via HID++."""
 
     def __init__(self, on_down=None, on_up=None, on_move=None,
-                 on_connect=None, on_disconnect=None):
+                 on_connect=None, on_disconnect=None,
+                 on_action_ring_down=None, on_action_ring_up=None):
         self._on_down       = on_down
         self._on_up         = on_up
         self._on_move       = on_move
         self._on_connect    = on_connect
         self._on_disconnect = on_disconnect
+        self._on_action_ring_down = on_action_ring_down
+        self._on_action_ring_up   = on_action_ring_up
         self._dev       = None          # hid.device()
         self._thread    = None
         self._running   = False
@@ -553,6 +559,8 @@ class HidGestureListener:
         self._gesture_cid = DEFAULT_GESTURE_CID
         self._gesture_candidates = list(DEFAULT_GESTURE_CIDS)
         self._held      = False
+        self._action_ring_held = False
+        self._action_ring_diverted = False
         self._connected = False         # True while HID++ device is open
         self._rawxy_enabled = False
         self._pending_dpi = None        # set by set_dpi(), applied in loop
@@ -829,6 +837,7 @@ class HidGestureListener:
             if resp is not None:
                 self._rawxy_enabled = True
                 print(f"[HidGesture] Divert {_format_cid(cid)} with RawXY: OK")
+                self._try_divert_action_ring()
                 return True
             self._rawxy_enabled = False
             resp = self._set_cid_reporting(cid, 0x03)
@@ -836,9 +845,23 @@ class HidGestureListener:
             print(f"[HidGesture] Divert {_format_cid(cid)}: "
                   f"{'OK' if ok else 'FAILED'}")
             if ok:
+                self._try_divert_action_ring()
                 return True
         self._gesture_cid = DEFAULT_GESTURE_CID
         return False
+
+    def _try_divert_action_ring(self):
+        """Divert the Actions Ring button (CID 0x01A0) if present on the device."""
+        self._action_ring_diverted = False
+        if self._feat_idx is None:
+            return
+        resp = self._set_cid_reporting(ACTION_RING_CID, 0x03)
+        if resp is not None:
+            self._action_ring_diverted = True
+            print(f"[HidGesture] Divert {_format_cid(ACTION_RING_CID)}: OK")
+        else:
+            print(f"[HidGesture] Divert {_format_cid(ACTION_RING_CID)}: "
+                  "not present or failed (normal for non-MX4 devices)")
 
     def _undivert(self):
         """Restore default button behaviour (best-effort)."""
@@ -1036,6 +1059,26 @@ class HidGestureListener:
                 except Exception as e:
                     print(f"[HidGesture] up callback error: {e}")
 
+        # Actions Ring (MX Master 4 only)
+        if self._action_ring_diverted:
+            action_ring_now = ACTION_RING_CID in cids
+            if action_ring_now and not self._action_ring_held:
+                self._action_ring_held = True
+                print("[HidGesture] Actions Ring DOWN")
+                if self._on_action_ring_down:
+                    try:
+                        self._on_action_ring_down()
+                    except Exception as e:
+                        print(f"[HidGesture] action_ring down error: {e}")
+            elif not action_ring_now and self._action_ring_held:
+                self._action_ring_held = False
+                print("[HidGesture] Actions Ring UP")
+                if self._on_action_ring_up:
+                    try:
+                        self._on_action_ring_up()
+                    except Exception as e:
+                        print(f"[HidGesture] action_ring up error: {e}")
+
     # ── connect / main loop ───────────────────────────────────────
 
     def _try_connect(self):
@@ -1218,6 +1261,8 @@ class HidGestureListener:
             self._battery_feature_id = None
             self._pending_battery = None
             self._held = False
+            self._action_ring_held = False
+            self._action_ring_diverted = False
             self._gesture_cid = DEFAULT_GESTURE_CID
             self._gesture_candidates = list(DEFAULT_GESTURE_CIDS)
             self._rawxy_enabled = False

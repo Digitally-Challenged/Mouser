@@ -28,6 +28,8 @@ DEFAULT_BUTTON_LAYOUT = (
     "hscroll_right",
 )
 
+MX_MASTER_4_BUTTON_LAYOUT = DEFAULT_BUTTON_LAYOUT + ("action_ring",)
+
 
 @dataclass(frozen=True)
 class LogiDeviceSpec:
@@ -76,7 +78,8 @@ KNOWN_LOGI_DEVICES = (
         display_name="MX Master 4",
         product_ids=(0xB042,),
         aliases=("Logitech MX Master 4", "MX Master 4 for Mac", "MX Master 4 M"),
-        ui_layout="mx_master",
+        ui_layout="mx_master_4",
+        supported_buttons=MX_MASTER_4_BUTTON_LAYOUT,
     ),
     LogiDeviceSpec(
         key="mx_master_3s",

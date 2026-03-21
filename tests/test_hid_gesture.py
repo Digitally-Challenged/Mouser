@@ -48,5 +48,14 @@ class GestureCandidateSelectionTests(unittest.TestCase):
         )
 
 
+class ActionRingCidTests(unittest.TestCase):
+    def test_action_ring_cid_in_known_names(self):
+        self.assertIn(0x01A0, hid_gesture.KNOWN_CID_NAMES)
+        self.assertIn("Actions Ring", hid_gesture.KNOWN_CID_NAMES[0x01A0])
+
+    def test_action_ring_cid_constant(self):
+        self.assertEqual(hid_gesture.ACTION_RING_CID, 0x01A0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -72,10 +72,15 @@ class LogiDeviceRegistryTests(unittest.TestCase):
         )
 
         self.assertEqual(info.display_name, "MX Master 4")
-        self.assertEqual(info.ui_layout, "mx_master")
+        self.assertEqual(info.ui_layout, "mx_master_4")
         self.assertEqual(info.gesture_cids, DEFAULT_GESTURE_CIDS)
         self.assertEqual(info.dpi_min, 200)
         self.assertEqual(info.dpi_max, 8000)
+
+    def test_mx_master_4_has_action_ring_button(self):
+        device = resolve_device(product_id=0xB042)
+
+        self.assertIn("action_ring", device.supported_buttons)
 
     def test_clamp_dpi_uses_known_device_bounds(self):
         info = build_connected_device_info(product_id=0xB019)

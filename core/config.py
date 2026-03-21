@@ -23,6 +23,7 @@ BUTTON_NAMES = {
     "xbutton2":      "Forward button",
     "hscroll_left":  "Horizontal scroll left",
     "hscroll_right": "Horizontal scroll right",
+    "action_ring":   "Actions Ring",
 }
 
 GESTURE_DIRECTION_BUTTONS = (
@@ -39,6 +40,7 @@ PROFILE_BUTTON_NAMES = {
     "gesture_up":    "Gesture swipe up",
     "gesture_down":  "Gesture swipe down",
 }
+# Note: action_ring is inherited from BUTTON_NAMES via the spread above
 
 # Maps config button keys to the MouseEvent types they correspond to
 BUTTON_TO_EVENTS = {
@@ -52,6 +54,7 @@ BUTTON_TO_EVENTS = {
     "xbutton2":      ("xbutton2_down", "xbutton2_up"),
     "hscroll_left":  ("hscroll_left",),
     "hscroll_right": ("hscroll_right",),
+    "action_ring":   ("action_ring_down", "action_ring_up"),
 }
 
 DEFAULT_CONFIG = {
@@ -72,6 +75,7 @@ DEFAULT_CONFIG = {
                 "xbutton2": "alt_tab",
                 "hscroll_left": "browser_back",
                 "hscroll_right": "browser_forward",
+                "action_ring": "none",
             },
         }
     },

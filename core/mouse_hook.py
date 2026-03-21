@@ -37,6 +37,8 @@ class MouseEvent:
     GESTURE_SWIPE_DOWN = "gesture_swipe_down"
     HSCROLL_LEFT = "hscroll_left"
     HSCROLL_RIGHT = "hscroll_right"
+    ACTION_RING_DOWN = "action_ring_down"
+    ACTION_RING_UP = "action_ring_up"
 
     def __init__(self, event_type, raw_data=None):
         self.event_type = event_type
@@ -875,11 +877,19 @@ if sys.platform == "win32":
                     on_move=self._on_hid_gesture_move,
                     on_connect=self._on_hid_connect,
                     on_disconnect=self._on_hid_disconnect,
+                    on_action_ring_down=self._on_action_ring_down,
+                    on_action_ring_up=self._on_action_ring_up,
                 )
                 self._hid_gesture = listener
                 if not listener.start():
                     self._hid_gesture = None
             return True
+
+        def _on_action_ring_down(self):
+            self._dispatch(MouseEvent(MouseEvent.ACTION_RING_DOWN))
+
+        def _on_action_ring_up(self):
+            self._dispatch(MouseEvent(MouseEvent.ACTION_RING_UP))
 
         def stop(self):
             self._running = False
@@ -1500,11 +1510,19 @@ elif sys.platform == "darwin":
                     on_move=self._on_hid_gesture_move,
                     on_connect=self._on_hid_connect,
                     on_disconnect=self._on_hid_disconnect,
+                    on_action_ring_down=self._on_action_ring_down,
+                    on_action_ring_up=self._on_action_ring_up,
                 )
                 self._hid_gesture = listener
                 if not listener.start():
                     self._hid_gesture = None
             return True
+
+        def _on_action_ring_down(self):
+            self._dispatch(MouseEvent(MouseEvent.ACTION_RING_DOWN))
+
+        def _on_action_ring_up(self):
+            self._dispatch(MouseEvent(MouseEvent.ACTION_RING_UP))
 
         def stop(self):
             self._running = False
