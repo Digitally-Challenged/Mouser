@@ -37,6 +37,7 @@ BT_DEV_IDX     = 0xFF        # device-index for direct Bluetooth
 FEAT_IROOT     = 0x0000
 FEAT_REPROG_V4 = 0x1B04      # Reprogrammable Controls V4
 FEAT_ADJ_DPI   = 0x2201      # Adjustable DPI
+FEAT_DEVICE_NAME    = 0x0005      # Device Name
 FEAT_UNIFIED_BATT   = 0x1004      # Unified Battery (preferred)
 FEAT_BATTERY_STATUS = 0x1000      # Battery Status (fallback)
 
@@ -44,6 +45,8 @@ FEAT_BATTERY_STATUS = 0x1000      # Battery Status (fallback)
 FEAT_BACKLIGHT2    = 0x1982   # Keyboard backlight control
 FEAT_FN_INVERSION  = 0x40A3   # Fn key inversion toggle
 FEAT_DISABLE_KEYS  = 0x4521   # Disable specific keys
+
+BOLT_RECEIVER_PID  = 0xC548   # Logi Bolt USB receiver
 
 MY_SW          = 0x0A        # arbitrary software-id used in our requests
 

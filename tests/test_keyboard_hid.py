@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import MagicMock
 
-from core.keyboard_hid import KeyboardHidListener, KEYBOARD_PIDS
+from core.keyboard_hid import KeyboardHidListener, KEYBOARD_BLE_PIDS, KEYBOARD_CANDIDATE_PIDS
 from core.hidpp import LONG_ID, MY_SW
 
 
@@ -36,10 +36,10 @@ class TestKeyboardPids(unittest.TestCase):
     """Verify the known keyboard PID set."""
 
     def test_contains_mx_mechanical(self):
-        self.assertIn(0xB366, KEYBOARD_PIDS)
+        self.assertIn(0xB366, KEYBOARD_BLE_PIDS)
 
     def test_contains_mx_mechanical_mini(self):
-        self.assertIn(0xB367, KEYBOARD_PIDS)
+        self.assertIn(0xB367, KEYBOARD_BLE_PIDS)
 
 
 def _build_report(dev_idx, feat_idx, func, sw, params):

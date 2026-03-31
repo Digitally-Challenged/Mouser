@@ -82,14 +82,14 @@ ApplicationWindow {
 
                     Rectangle {
                         width: 8; height: 8; radius: 4
-                        color: backend.mouseConnected ? root.theme.accent : root.theme.textTertiary
+                        color: backend.mouseConnected ? root.theme.accent : root.theme.textDim
                         ToolTip.visible: connMa1.containsMouse
                         ToolTip.text: "Mouse"
                         MouseArea { id: connMa1; anchors.fill: parent; hoverEnabled: true }
                     }
                     Rectangle {
                         width: 8; height: 8; radius: 4
-                        color: backend.keyboardConnected ? root.theme.accent : root.theme.textTertiary
+                        color: backend.keyboardConnected ? root.theme.accent : root.theme.textDim
                         ToolTip.visible: connMa2.containsMouse
                         ToolTip.text: "Keyboard"
                         MouseArea { id: connMa2; anchors.fill: parent; hoverEnabled: true }

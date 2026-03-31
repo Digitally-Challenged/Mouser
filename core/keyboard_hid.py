@@ -26,7 +26,8 @@ from core.logi_keyboards import (
 from core.hidpp import (
     HIDAPI_OK, LONG_ID, LONG_LEN, BT_DEV_IDX,
     FEAT_REPROG_V4, FEAT_UNIFIED_BATT, FEAT_BATTERY_STATUS,
-    FEAT_BACKLIGHT2, FEAT_FN_INVERSION,
+    FEAT_BACKLIGHT2, FEAT_FN_INVERSION, FEAT_DEVICE_NAME,
+    BOLT_RECEIVER_PID,
     MY_SW,
     KEY_FLAG_BITS, MAPPING_FLAG_BITS, HIDPP_ERROR_NAMES, KNOWN_CID_NAMES,
     parse_report as _parse,
@@ -48,7 +49,11 @@ except ImportError:
 
 # ── Keyboard-specific constants ──────────────────────────────────
 
-KEYBOARD_PIDS: frozenset = frozenset({0xB366, 0xB367})
+# BLE PIDs for direct Bluetooth connection
+KEYBOARD_BLE_PIDS: frozenset = frozenset({0xB366, 0xB367})
+
+# PIDs we should try (BLE direct + Bolt receiver which multiplexes devices)
+KEYBOARD_CANDIDATE_PIDS: frozenset = frozenset({0xB366, 0xB367, BOLT_RECEIVER_PID})
 
 
 # ── Listener class ───────────────────────────────────────────────
@@ -265,6 +270,35 @@ class KeyboardHidListener:
             if p and p[0] != 0:
                 return p[0]
         return None
+
+    def _query_device_name(self) -> str | None:
+        """Query DEVICE_NAME (0x0005) to identify the device at current index."""
+        name_idx = self._find_feature(FEAT_DEVICE_NAME)
+        if name_idx is None:
+            return None
+        # getDeviceNameCount: function 0
+        resp = self._request(name_idx, 0, [])
+        if not resp:
+            return None
+        _, _, _, _, p = resp
+        name_len = p[0] if p else 0
+        if name_len == 0:
+            return None
+        # getDeviceName: function 1, param=charIndex
+        name_bytes = bytearray()
+        offset = 0
+        while offset < name_len:
+            resp = self._request(name_idx, 1, [offset])
+            if not resp:
+                break
+            _, _, _, _, p = resp
+            chunk = bytes(p).rstrip(b"\x00")
+            if not chunk:
+                break
+            name_bytes.extend(chunk)
+            offset += len(chunk)
+        name = name_bytes[:name_len].decode("utf-8", errors="replace").strip()
+        return name if name else None
 
     def _get_cid_reporting(self, cid: int):
         if self._feat_idx is None:
@@ -549,8 +583,8 @@ class KeyboardHidListener:
             product = info.get("product_string")
             source = info.get("source", "unknown")
 
-            # Only attempt connection to known keyboard PIDs
-            if pid not in KEYBOARD_PIDS:
+            # Only attempt connection to known keyboard PIDs or Bolt receiver
+            if pid not in KEYBOARD_CANDIDATE_PIDS:
                 continue
 
             self._feat_idx = None
@@ -609,49 +643,71 @@ class KeyboardHidListener:
                 continue
 
             # Try Bluetooth direct (0xFF) first, then Bolt receiver slots
+            is_bolt = (pid == BOLT_RECEIVER_PID)
             for idx in (0xFF, 1, 2, 3, 4, 5, 6):
                 self._dev_idx = idx
                 fi = self._find_feature(FEAT_REPROG_V4)
-                if fi is not None:
-                    self._feat_idx = fi
-                    print(f"[KeyboardHid] Found REPROG_V4 @0x{fi:02X}  "
-                          f"PID=0x{pid:04X} devIdx=0x{idx:02X}")
+                if fi is None:
+                    continue
 
-                    # Discover optional features
-                    bl_fi = self._find_feature(FEAT_BACKLIGHT2)
-                    if bl_fi:
-                        self._backlight_idx = bl_fi
-                        print(f"[KeyboardHid] Found BACKLIGHT2 @0x{bl_fi:02X}")
+                self._feat_idx = fi
 
-                    fn_fi = self._find_feature(FEAT_FN_INVERSION)
-                    if fn_fi:
-                        self._fn_inv_idx = fn_fi
-                        print(f"[KeyboardHid] Found FN_INVERSION @0x{fn_fi:02X}")
+                # On Bolt receiver, multiple devices share one HID interface.
+                # Use BACKLIGHT2 as a keyboard discriminator (mice don't have it).
+                # Also query device name for identification.
+                bl_fi = self._find_feature(FEAT_BACKLIGHT2)
+                dev_name = self._query_device_name()
 
-                    batt_fi = self._find_feature(FEAT_UNIFIED_BATT)
+                if is_bolt and not bl_fi:
+                    # This device index is probably a mouse, skip it
+                    print(f"[KeyboardHid] devIdx=0x{idx:02X} has REPROG_V4 "
+                          f"but no BACKLIGHT2 (name={dev_name!r}) — "
+                          f"skipping (likely a mouse)")
+                    self._feat_idx = None
+                    continue
+
+                print(f"[KeyboardHid] Found REPROG_V4 @0x{fi:02X}  "
+                      f"PID=0x{pid:04X} devIdx=0x{idx:02X} "
+                      f"name={dev_name!r}")
+
+                if bl_fi:
+                    self._backlight_idx = bl_fi
+                    print(f"[KeyboardHid] Found BACKLIGHT2 @0x{bl_fi:02X}")
+
+                fn_fi = self._find_feature(FEAT_FN_INVERSION)
+                if fn_fi:
+                    self._fn_inv_idx = fn_fi
+                    print(f"[KeyboardHid] Found FN_INVERSION @0x{fn_fi:02X}")
+
+                batt_fi = self._find_feature(FEAT_UNIFIED_BATT)
+                if batt_fi:
+                    self._battery_idx = batt_fi
+                    self._battery_feature_id = FEAT_UNIFIED_BATT
+                    print(f"[KeyboardHid] Found UNIFIED_BATT @0x{batt_fi:02X}")
+                else:
+                    batt_fi = self._find_feature(FEAT_BATTERY_STATUS)
                     if batt_fi:
                         self._battery_idx = batt_fi
-                        self._battery_feature_id = FEAT_UNIFIED_BATT
-                        print(f"[KeyboardHid] Found UNIFIED_BATT @0x{batt_fi:02X}")
-                    else:
-                        batt_fi = self._find_feature(FEAT_BATTERY_STATUS)
-                        if batt_fi:
-                            self._battery_idx = batt_fi
-                            self._battery_feature_id = FEAT_BATTERY_STATUS
-                            print(f"[KeyboardHid] Found BATTERY_STATUS "
-                                  f"@0x{batt_fi:02X}")
+                        self._battery_feature_id = FEAT_BATTERY_STATUS
+                        print(f"[KeyboardHid] Found BATTERY_STATUS "
+                              f"@0x{batt_fi:02X}")
 
-                    if self._discover_and_divert_keys():
-                        self._connected_keyboard = build_connected_keyboard_info(
-                            product_id=pid,
-                            product_name=product,
-                            transport=(
-                                open_info.get("transport") or transport_name
-                            ),
-                            source=source,
-                        )
-                        return True
-                    break  # right device but divert failed
+                # Use queried device name for build_connected_keyboard_info
+                resolved_name = dev_name or product
+                kb_spec = resolve_keyboard(
+                    product_id=pid, product_name=resolved_name)
+
+                if self._discover_and_divert_keys():
+                    self._connected_keyboard = build_connected_keyboard_info(
+                        product_id=pid,
+                        product_name=resolved_name,
+                        transport=(
+                            open_info.get("transport") or transport_name
+                        ),
+                        source=source,
+                    )
+                    return True
+                break  # right device but divert failed
 
             # Couldn't use this interface — close and try next
             try:
