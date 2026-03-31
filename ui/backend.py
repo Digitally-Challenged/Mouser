@@ -43,6 +43,10 @@ class Backend(QObject):
     gestureRecordsChanged = Signal()
     deviceInfoChanged = Signal()
     deviceLayoutChanged = Signal()
+    keyboardConnectedChanged = Signal()
+    keyboardBatteryLevelChanged = Signal()
+    keyboardMappingsChanged = Signal()
+    keyboardSettingsChanged = Signal()
 
     # Internal cross-thread signals
     _profileSwitchRequest = Signal(str)
@@ -51,6 +55,8 @@ class Backend(QObject):
     _batteryChangeRequest = Signal(int)
     _debugMessageRequest = Signal(str)
     _gestureEventRequest = Signal(object)
+    _keyboardConnectionChangeRequest = Signal(bool)
+    _keyboardBatteryChangeRequest = Signal(int)
 
     def __init__(self, engine=None, parent=None):
         super().__init__(parent)
@@ -64,9 +70,11 @@ class Backend(QObject):
         self._device_dpi_min = DEFAULT_DPI_MIN
         self._device_dpi_max = DEFAULT_DPI_MAX
         self._battery_level = -1
+        self._keyboard_connected = False
+        self._keyboard_battery_level = -1
         self._debug_lines = []
         self._debug_events_enabled = bool(
-            self._cfg.get("settings", {}).get("debug_mode", False)
+            self._cfg.get("devices", {}).get("mouse", {}).get("settings", {}).get("debug_mode", False)
         )
         self._record_mode = False
         self._gesture_records = []
@@ -91,6 +99,10 @@ class Backend(QObject):
             self._handleDebugMessage, Qt.QueuedConnection)
         self._gestureEventRequest.connect(
             self._handleGestureEvent, Qt.QueuedConnection)
+        self._keyboardConnectionChangeRequest.connect(
+            self._handleKeyboardConnectionChange, Qt.QueuedConnection)
+        self._keyboardBatteryChangeRequest.connect(
+            self._handleKeyboardBatteryChange, Qt.QueuedConnection)
 
         # Wire engine callbacks
         if engine:
@@ -105,6 +117,10 @@ class Backend(QObject):
                 engine.set_gesture_event_callback(self._onEngineGestureEvent)
             if hasattr(engine, "set_debug_enabled"):
                 engine.set_debug_enabled(self.debugMode)
+            if hasattr(engine, "set_keyboard_connection_callback"):
+                engine.set_keyboard_connection_callback(self._onEngineKeyboardConnectionChange)
+            if hasattr(engine, "set_keyboard_battery_callback"):
+                engine.set_keyboard_battery_callback(self._onEngineKeyboardBatteryRead)
         self._apply_device_layout(
             getattr(engine, "connected_device", None) if engine else None
         )
@@ -165,28 +181,28 @@ class Backend(QObject):
 
     @Property(int, notify=settingsChanged)
     def dpi(self):
-        return self._cfg.get("settings", {}).get("dpi", 1000)
+        return self._cfg.get("devices", {}).get("mouse", {}).get("settings", {}).get("dpi", 1000)
 
     @Property(bool, notify=settingsChanged)
     def invertVScroll(self):
-        return self._cfg.get("settings", {}).get("invert_vscroll", False)
+        return self._cfg.get("devices", {}).get("mouse", {}).get("settings", {}).get("invert_vscroll", False)
 
     @Property(bool, notify=settingsChanged)
     def invertHScroll(self):
-        return self._cfg.get("settings", {}).get("invert_hscroll", False)
+        return self._cfg.get("devices", {}).get("mouse", {}).get("settings", {}).get("invert_hscroll", False)
 
     @Property(int, notify=settingsChanged)
     def gestureThreshold(self):
-        return int(self._cfg.get("settings", {}).get("gesture_threshold", 50))
+        return int(self._cfg.get("devices", {}).get("mouse", {}).get("settings", {}).get("gesture_threshold", 50))
 
     @Property(str, notify=settingsChanged)
     def appearanceMode(self):
-        mode = self._cfg.get("settings", {}).get("appearance_mode", "system")
+        mode = self._cfg.get("devices", {}).get("mouse", {}).get("settings", {}).get("appearance_mode", "system")
         return mode if mode in {"system", "light", "dark"} else "system"
 
     @Property(bool, notify=settingsChanged)
     def debugMode(self):
-        return bool(self._cfg.get("settings", {}).get("debug_mode", False))
+        return bool(self._cfg.get("devices", {}).get("mouse", {}).get("settings", {}).get("debug_mode", False))
 
     @Property(bool, notify=debugEventsEnabledChanged)
     def debugEventsEnabled(self):
@@ -198,7 +214,7 @@ class Backend(QObject):
 
     @Property(str, notify=activeProfileChanged)
     def activeProfile(self):
-        return self._cfg.get("active_profile", "default")
+        return self._cfg.get("devices", {}).get("mouse", {}).get("active_profile", "default")
 
     @Property(bool, notify=mouseConnectedChanged)
     def mouseConnected(self):
@@ -299,8 +315,9 @@ class Backend(QObject):
     @Property(list, notify=profilesChanged)
     def profiles(self):
         result = []
-        active = self._cfg.get("active_profile", "default")
-        for pname, pdata in self._cfg.get("profiles", {}).items():
+        mouse_cfg = self._cfg.get("devices", {}).get("mouse", {})
+        active = mouse_cfg.get("active_profile", "default")
+        for pname, pdata in mouse_cfg.get("profiles", {}).items():
             apps = pdata.get("apps", [])
             result.append({
                 "name": pname,
@@ -324,6 +341,56 @@ class Backend(QObject):
                 "iconSource": icon,
             })
         return result
+
+    # ── Keyboard Properties ────────────────────────────────────
+
+    @Property(bool, notify=keyboardConnectedChanged)
+    def keyboardConnected(self):
+        return self._keyboard_connected
+
+    @Property(int, notify=keyboardBatteryLevelChanged)
+    def keyboardBatteryLevel(self):
+        return self._keyboard_battery_level
+
+    @Property(list, notify=keyboardMappingsChanged)
+    def keyboardButtons(self):
+        from core.logi_keyboards import CID_DISPLAY_NAMES, NON_DIVERTABLE_CIDS
+        mappings = get_active_mappings(self._cfg, device="keyboard")
+        result = []
+        for cid_hex, action_id in mappings.items():
+            try:
+                cid = int(cid_hex, 16)
+            except (ValueError, TypeError):
+                continue
+            if cid in NON_DIVERTABLE_CIDS:
+                continue
+            result.append({
+                "key": cid_hex,
+                "name": CID_DISPLAY_NAMES.get(cid, f"Key 0x{cid:04X}"),
+                "actionId": action_id,
+                "actionLabel": _action_label(action_id),
+            })
+        return result
+
+    @Property(bool, notify=keyboardSettingsChanged)
+    def fnInversion(self):
+        kb = self._cfg.get("devices", {}).get("keyboard", {})
+        return bool(kb.get("settings", {}).get("fn_inversion", False))
+
+    @Property(bool, notify=keyboardSettingsChanged)
+    def backlightEnabled(self):
+        kb = self._cfg.get("devices", {}).get("keyboard", {})
+        return bool(kb.get("settings", {}).get("backlight_enabled", True))
+
+    @Property(int, notify=keyboardSettingsChanged)
+    def backlightBrightness(self):
+        kb = self._cfg.get("devices", {}).get("keyboard", {})
+        return int(kb.get("settings", {}).get("backlight_brightness", 80))
+
+    @Property(str, notify=keyboardSettingsChanged)
+    def backlightMode(self):
+        kb = self._cfg.get("devices", {}).get("keyboard", {})
+        return str(kb.get("settings", {}).get("backlight_mode", "auto"))
 
     # ── Slots ──────────────────────────────────────────────────
 
@@ -351,7 +418,7 @@ class Backend(QObject):
     def setDpi(self, value):
         device = getattr(self._engine, "connected_device", None) if self._engine else None
         dpi = clamp_dpi(value, device)
-        self._cfg.setdefault("settings", {})["dpi"] = dpi
+        self._cfg.setdefault("devices", {}).setdefault("mouse", {}).setdefault("settings", {})["dpi"] = dpi
         save_config(self._cfg)
         if self._engine:
             self._engine.set_dpi(dpi)
@@ -359,7 +426,7 @@ class Backend(QObject):
 
     @Slot(bool)
     def setInvertVScroll(self, value):
-        self._cfg.setdefault("settings", {})["invert_vscroll"] = value
+        self._cfg.setdefault("devices", {}).setdefault("mouse", {}).setdefault("settings", {})["invert_vscroll"] = value
         save_config(self._cfg)
         if self._engine:
             self._engine.reload_mappings()
@@ -367,7 +434,7 @@ class Backend(QObject):
 
     @Slot(bool)
     def setInvertHScroll(self, value):
-        self._cfg.setdefault("settings", {})["invert_hscroll"] = value
+        self._cfg.setdefault("devices", {}).setdefault("mouse", {}).setdefault("settings", {})["invert_hscroll"] = value
         save_config(self._cfg)
         if self._engine:
             self._engine.reload_mappings()
@@ -376,7 +443,7 @@ class Backend(QObject):
     @Slot(int)
     def setGestureThreshold(self, value):
         snapped = max(20, min(400, int(round(value / 5.0) * 5)))
-        self._cfg.setdefault("settings", {})["gesture_threshold"] = snapped
+        self._cfg.setdefault("devices", {}).setdefault("mouse", {}).setdefault("settings", {})["gesture_threshold"] = snapped
         save_config(self._cfg)
         if self._engine:
             self._engine.reload_mappings()
@@ -387,14 +454,14 @@ class Backend(QObject):
         normalized = mode if mode in {"system", "light", "dark"} else "system"
         if self.appearanceMode == normalized:
             return
-        self._cfg.setdefault("settings", {})["appearance_mode"] = normalized
+        self._cfg.setdefault("devices", {}).setdefault("mouse", {}).setdefault("settings", {})["appearance_mode"] = normalized
         save_config(self._cfg)
         self.settingsChanged.emit()
 
     @Slot(bool)
     def setDebugMode(self, value):
         enabled = bool(value)
-        self._cfg.setdefault("settings", {})["debug_mode"] = enabled
+        self._cfg.setdefault("devices", {}).setdefault("mouse", {}).setdefault("settings", {})["debug_mode"] = enabled
         save_config(self._cfg)
         self._debug_events_enabled = enabled
         if self._engine and hasattr(self._engine, "set_debug_enabled"):
@@ -448,7 +515,8 @@ class Backend(QObject):
             return
         app_spec = entry.get("path") or entry["id"]
         label = entry.get("label", appId)
-        for pdata in self._cfg.get("profiles", {}).values():
+        mouse_cfg = self._cfg.get("devices", {}).get("mouse", {})
+        for pdata in mouse_cfg.get("profiles", {}).values():
             if app_spec.lower() in [a.lower() for a in pdata.get("apps", [])]:
                 self.statusMessage.emit("Profile already exists")
                 return
@@ -476,7 +544,8 @@ class Backend(QObject):
         path = os.path.normpath(path)
         entry = app_catalog.resolve_app_spec(path)
         label = entry.get("label") if entry else os.path.splitext(os.path.basename(path))[0]
-        for pdata in self._cfg.get("profiles", {}).values():
+        mouse_cfg = self._cfg.get("devices", {}).get("mouse", {})
+        for pdata in mouse_cfg.get("profiles", {}).values():
             if path.lower() in [a.lower() for a in pdata.get("apps", [])]:
                 self.statusMessage.emit("Profile already exists")
                 return
@@ -501,7 +570,7 @@ class Backend(QObject):
     @Slot(str, result=list)
     def getProfileMappings(self, profileName):
         """Return button mappings for a specific profile."""
-        profiles = self._cfg.get("profiles", {})
+        profiles = self._cfg.get("devices", {}).get("mouse", {}).get("profiles", {})
         pdata = profiles.get(profileName, {})
         mappings = pdata.get("mappings", {})
         result = []
@@ -531,7 +600,7 @@ class Backend(QObject):
             self.statusMessage.emit("Unknown layout option")
             return
 
-        overrides = self._cfg.setdefault("settings", {}).setdefault(
+        overrides = self._cfg.setdefault("devices", {}).setdefault("mouse", {}).setdefault("settings", {}).setdefault(
             "device_layout_overrides",
             {},
         )
@@ -547,6 +616,41 @@ class Backend(QObject):
             self.statusMessage.emit("Experimental layout applied")
         else:
             self.statusMessage.emit("Layout reset to auto-detect")
+
+    # ── Keyboard Slots ─────────────────────────────────────────
+
+    @Slot(str, str)
+    def setKeyboardMapping(self, cid_hex, action_id):
+        from core.config import set_mapping as _set_mapping
+        _set_mapping(self._cfg, cid_hex, action_id, device="keyboard")
+        if self._engine:
+            self._engine.reload_keyboard_mappings()
+        self.keyboardMappingsChanged.emit()
+
+    @Slot(bool)
+    def setFnInversion(self, inverted):
+        kb = self._cfg.setdefault("devices", {}).setdefault("keyboard", {})
+        kb.setdefault("settings", {})["fn_inversion"] = inverted
+        save_config(self._cfg)
+        if self._engine and hasattr(self._engine, "_keyboard_hid"):
+            self._engine._keyboard_hid.write_fn_inversion(inverted)
+        self.keyboardSettingsChanged.emit()
+
+    @Slot(bool, int, str)
+    def setBacklight(self, enabled, brightness, mode):
+        kb = self._cfg.setdefault("devices", {}).setdefault("keyboard", {})
+        settings = kb.setdefault("settings", {})
+        settings["backlight_enabled"] = enabled
+        settings["backlight_brightness"] = brightness
+        settings["backlight_mode"] = mode
+        save_config(self._cfg)
+        if self._engine and hasattr(self._engine, "_keyboard_hid"):
+            self._engine._keyboard_hid.write_backlight(
+                enabled=enabled, brightness=brightness, mode=mode,
+                timeout_hands_out=settings.get("backlight_timeout_hands_out", 30),
+                timeout_hands_in=settings.get("backlight_timeout_hands_in", 300),
+            )
+        self.keyboardSettingsChanged.emit()
 
     # ── Engine thread callbacks (cross-thread safe) ────────────
 
@@ -574,10 +678,18 @@ class Backend(QObject):
         """Called from engine/hook thread — posts to Qt main thread."""
         self._gestureEventRequest.emit(event)
 
+    def _onEngineKeyboardConnectionChange(self, connected):
+        """Called from engine thread — posts to Qt main thread."""
+        self._keyboardConnectionChangeRequest.emit(connected)
+
+    def _onEngineKeyboardBatteryRead(self, level):
+        """Called from engine thread — posts to Qt main thread."""
+        self._keyboardBatteryChangeRequest.emit(level)
+
     @Slot(str)
     def _handleProfileSwitch(self, profile_name):
         """Runs on Qt main thread."""
-        self._cfg["active_profile"] = profile_name
+        self._cfg.setdefault("devices", {}).setdefault("mouse", {})["active_profile"] = profile_name
         self.activeProfileChanged.emit()
         self.mappingsChanged.emit()
         self.profilesChanged.emit()
@@ -586,7 +698,7 @@ class Backend(QObject):
     @Slot(int)
     def _handleDpiRead(self, dpi):
         """Runs on Qt main thread."""
-        self._cfg.setdefault("settings", {})["dpi"] = dpi
+        self._cfg.setdefault("devices", {}).setdefault("mouse", {}).setdefault("settings", {})["dpi"] = dpi
         self.settingsChanged.emit()
         self.dpiFromDevice.emit(dpi)
 
@@ -628,17 +740,18 @@ class Backend(QObject):
         if info_changed:
             self.deviceInfoChanged.emit()
 
-        current_dpi = self._cfg.get("settings", {}).get("dpi", DEFAULT_DPI_MIN)
+        mouse_settings = self._cfg.get("devices", {}).get("mouse", {}).get("settings", {})
+        current_dpi = mouse_settings.get("dpi", DEFAULT_DPI_MIN)
         if device is not None:
             clamped_dpi = clamp_dpi(current_dpi, device)
             if clamped_dpi != current_dpi:
-                self._cfg.setdefault("settings", {})["dpi"] = clamped_dpi
+                self._cfg.setdefault("devices", {}).setdefault("mouse", {}).setdefault("settings", {})["dpi"] = clamped_dpi
                 save_config(self._cfg)
                 if self._engine:
                     self._engine.set_dpi(clamped_dpi)
                 self.settingsChanged.emit()
 
-        overrides = self._cfg.get("settings", {}).get("device_layout_overrides", {})
+        overrides = self._cfg.get("devices", {}).get("mouse", {}).get("settings", {}).get("device_layout_overrides", {})
         valid_override_keys = {choice["key"] for choice in get_manual_layout_choices()}
         override_key = overrides.get(device_key, "") if device_key else ""
         if override_key not in valid_override_keys:
@@ -660,6 +773,18 @@ class Backend(QObject):
         """Runs on Qt main thread."""
         self._battery_level = level
         self.batteryLevelChanged.emit()
+
+    @Slot(bool)
+    def _handleKeyboardConnectionChange(self, connected):
+        """Runs on Qt main thread."""
+        self._keyboard_connected = connected
+        self.keyboardConnectedChanged.emit()
+
+    @Slot(int)
+    def _handleKeyboardBatteryChange(self, level):
+        """Runs on Qt main thread."""
+        self._keyboard_battery_level = level
+        self.keyboardBatteryLevelChanged.emit()
 
     @Slot(str)
     def _handleDebugMessage(self, message):
