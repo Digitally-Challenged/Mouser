@@ -1,11 +1,13 @@
 """
-Engine — wires the mouse hook to the key simulator using the
-current configuration.  Sits between the hook layer and the UI.
-Supports per-application auto-switching of profiles.
+Engine — wires the mouse hook and keyboard hook to the key simulator
+using the current configuration.  Sits between the hook layer and the UI.
+Supports per-application auto-switching of profiles for both devices.
 """
 
 import threading
 from core.mouse_hook import MouseHook, MouseEvent
+from core.keyboard_hid import KeyboardHidListener
+from core.keyboard_hook import KeyboardHook
 from core.key_simulator import ACTIONS, execute_action
 from core.config import (
     load_config, get_active_mappings, get_profile_for_app,
@@ -13,6 +15,7 @@ from core.config import (
 )
 from core.app_detector import AppDetector
 from core.logi_devices import clamp_dpi
+from core.logi_keyboards import CID_DISPLAY_NAMES, NON_DIVERTABLE_CIDS
 
 
 class Engine:
@@ -27,7 +30,12 @@ class Engine:
         self.cfg = load_config()
         self._enabled = True
         self._hscroll_accum = 0
-        self._current_profile: str = self.cfg.get("active_profile", "default")
+        self._current_profile: str = (
+            self.cfg.get("devices", {}).get("mouse", {}).get("active_profile", "default")
+        )
+        self._current_kb_profile: str = (
+            self.cfg.get("devices", {}).get("keyboard", {}).get("active_profile", "default")
+        )
         self._app_detector = AppDetector(self._on_app_change)
         self._profile_change_cb = None       # UI callback
         self._connection_change_cb = None   # UI callback for device status
@@ -36,7 +44,7 @@ class Engine:
         self._debug_cb = None               # UI callback for debug messages
         self._gesture_event_cb = None       # UI callback for structured gesture events
         self._debug_events_enabled = bool(
-            self.cfg.get("settings", {}).get("debug_mode", False)
+            self.cfg.get("devices", {}).get("mouse", {}).get("settings", {}).get("debug_mode", False)
         )
         self._battery_poll_stop = threading.Event()
         self._lock = threading.Lock()
@@ -44,8 +52,21 @@ class Engine:
         self.hook.set_gesture_callback(self._emit_gesture_event)
         self._setup_hooks()
         self.hook.set_connection_change_callback(self._on_connection_change)
+
+        # Keyboard support
+        self.keyboard_hook = KeyboardHook()
+        self._keyboard_hid = KeyboardHidListener(
+            on_key_diverted=self._on_keyboard_key_event,
+            on_connect=self._on_keyboard_connect,
+            on_disconnect=self._on_keyboard_disconnect,
+        )
+        self._keyboard_connection_cb = None
+        self._keyboard_battery_cb = None
+        self._keyboard_battery_poll_stop = threading.Event()
+        self._setup_keyboard_hooks()
+
         # Apply persisted DPI setting
-        dpi = self.cfg.get("settings", {}).get("dpi", 1000)
+        dpi = self.cfg.get("devices", {}).get("mouse", {}).get("settings", {}).get("dpi", 1000)
         try:
             if hasattr(self.hook, "set_dpi"):
                 self.hook.set_dpi(dpi)
@@ -60,7 +81,7 @@ class Engine:
         mappings = get_active_mappings(self.cfg)
 
         # Apply scroll inversion settings to the hook
-        settings = self.cfg.get("settings", {})
+        settings = self.cfg.get("devices", {}).get("mouse", {}).get("settings", {})
         self.hook.invert_vscroll = settings.get("invert_vscroll", False)
         self.hook.invert_hscroll = settings.get("invert_hscroll", False)
         self.hook.debug_mode = self._debug_events_enabled
@@ -120,30 +141,115 @@ class Engine:
         return handler
 
     # ------------------------------------------------------------------
+    # Keyboard hook wiring
+    # ------------------------------------------------------------------
+    def _setup_keyboard_hooks(self):
+        """Register keyboard key->action mappings from config."""
+        mappings = get_active_mappings(self.cfg, device="keyboard")
+        self.keyboard_hook.reset()
+        for cid_str, action_id in mappings.items():
+            if action_id == "none":
+                continue
+            try:
+                cid = int(cid_str, 16) if isinstance(cid_str, str) else int(cid_str)
+            except (ValueError, TypeError):
+                continue
+            self.keyboard_hook.register(cid, self._make_keyboard_handler(action_id))
+
+    def _make_keyboard_handler(self, action_id):
+        def handler(cid, pressed):
+            if pressed and self._enabled:
+                self._emit_debug(
+                    f"Keyboard CID 0x{cid:04X} -> {action_id} "
+                    f"({self._action_label(action_id)})"
+                )
+                execute_action(action_id)
+        return handler
+
+    def _on_keyboard_key_event(self, cid: int, pressed: bool):
+        """Called by KeyboardHidListener when a diverted key is pressed/released."""
+        if pressed:
+            self.keyboard_hook.on_key_event(cid, True)
+        else:
+            self.keyboard_hook.on_key_event(cid, False)
+
+    def _on_keyboard_connect(self):
+        if self._keyboard_connection_cb:
+            try:
+                self._keyboard_connection_cb(True)
+            except Exception:
+                pass
+        # Start battery polling
+        self._keyboard_battery_poll_stop = threading.Event()
+        threading.Thread(
+            target=self._keyboard_battery_poll_loop,
+            args=(self._keyboard_battery_poll_stop,),
+            daemon=True,
+            name="KeyboardBatteryPoll",
+        ).start()
+
+    def _on_keyboard_disconnect(self):
+        self._keyboard_battery_poll_stop.set()
+        if self._keyboard_connection_cb:
+            try:
+                self._keyboard_connection_cb(False)
+            except Exception:
+                pass
+
+    def _keyboard_battery_poll_loop(self, stop_event):
+        if stop_event.wait(1):
+            return
+        while not stop_event.is_set():
+            level = self._keyboard_hid.read_battery()
+            if stop_event.is_set():
+                return
+            if level is not None and self._keyboard_battery_cb:
+                try:
+                    self._keyboard_battery_cb(level)
+                except Exception:
+                    pass
+            if stop_event.wait(300):
+                return
+
+    # ------------------------------------------------------------------
     # Per-app auto-switching
     # ------------------------------------------------------------------
     def _on_app_change(self, exe_name: str):
         """Called by AppDetector when foreground window changes."""
-        target = get_profile_for_app(self.cfg, exe_name)
-        if target == self._current_profile:
-            return
-        print(f"[Engine] App changed to {exe_name} -> profile '{target}'")
-        self._switch_profile(target)
+        target_mouse = get_profile_for_app(self.cfg, exe_name, device="mouse")
+        target_kb = get_profile_for_app(self.cfg, exe_name, device="keyboard")
+
+        mouse_changed = target_mouse != self._current_profile
+        kb_changed = target_kb != self._current_kb_profile
+
+        if mouse_changed:
+            print(f"[Engine] App changed to {exe_name} -> mouse profile '{target_mouse}'")
+            self._switch_profile(target_mouse)
+        if kb_changed:
+            print(f"[Engine] App changed to {exe_name} -> keyboard profile '{target_kb}'")
+            self._switch_keyboard_profile(target_kb)
 
     def _switch_profile(self, profile_name: str):
         with self._lock:
-            self.cfg["active_profile"] = profile_name
+            self.cfg["devices"]["mouse"]["active_profile"] = profile_name
             self._current_profile = profile_name
             # Lightweight: just re-wire callbacks, keep hook + HID++ alive
             self.hook.reset_bindings()
             self._setup_hooks()
-            self._emit_debug(f"Active profile -> {profile_name}")
+            self._emit_debug(f"Active mouse profile -> {profile_name}")
         # Notify UI (if connected)
         if self._profile_change_cb:
             try:
                 self._profile_change_cb(profile_name)
             except Exception:
                 pass
+
+    def _switch_keyboard_profile(self, profile_name: str):
+        with self._lock:
+            self.cfg["devices"]["keyboard"]["active_profile"] = profile_name
+            self._current_kb_profile = profile_name
+            self._setup_keyboard_hooks()
+            self._emit_debug(f"Active keyboard profile -> {profile_name}")
 
     def set_profile_change_callback(self, cb):
         """Register a callback ``cb(profile_name)`` invoked on auto-switch."""
@@ -159,7 +265,7 @@ class Engine:
 
     def set_debug_enabled(self, enabled):
         enabled = bool(enabled)
-        self.cfg.setdefault("settings", {})["debug_mode"] = enabled
+        self.cfg.setdefault("devices", {}).setdefault("mouse", {}).setdefault("settings", {})["debug_mode"] = enabled
         self._debug_events_enabled = enabled
         self.hook.debug_mode = enabled
         if enabled:
@@ -268,7 +374,7 @@ class Engine:
     def set_dpi(self, dpi_value):
         """Send DPI change to the mouse via HID++."""
         dpi = clamp_dpi(dpi_value, self.connected_device)
-        self.cfg.setdefault("settings", {})["dpi"] = dpi
+        self.cfg.setdefault("devices", {}).setdefault("mouse", {}).setdefault("settings", {})["dpi"] = dpi
         save_config(self.cfg)
         # Try via the hook's HidGestureListener
         hg = self.hook._hid_gesture
@@ -284,16 +390,23 @@ class Engine:
         """
         with self._lock:
             self.cfg = load_config()
-            self._current_profile = self.cfg.get("active_profile", "default")
+            self._current_profile = (
+                self.cfg.get("devices", {}).get("mouse", {}).get("active_profile", "default")
+            )
+            self._current_kb_profile = (
+                self.cfg.get("devices", {}).get("keyboard", {}).get("active_profile", "default")
+            )
             self.hook.reset_bindings()
             self._setup_hooks()
-            self._emit_debug(f"reload_mappings profile={self._current_profile}")
+            self._setup_keyboard_hooks()
+            self._emit_debug(f"reload_mappings mouse={self._current_profile} keyboard={self._current_kb_profile}")
 
     def set_enabled(self, enabled):
         self._enabled = bool(enabled)
 
     def start(self):
         self.hook.start()
+        self._keyboard_hid.start()
         self._app_detector.start()
         # Read current DPI from device on startup (don't overwrite it)
         def _read_dpi():
@@ -303,7 +416,7 @@ class Engine:
             if hg:
                 current = hg.read_dpi()
                 if current is not None:
-                    self.cfg.setdefault("settings", {})["dpi"] = current
+                    self.cfg.setdefault("devices", {}).setdefault("mouse", {}).setdefault("settings", {})["dpi"] = current
                     save_config(self.cfg)
                     if self._dpi_read_cb:
                         try:
@@ -318,5 +431,35 @@ class Engine:
 
     def stop(self):
         self._battery_poll_stop.set()
+        self._keyboard_battery_poll_stop.set()
         self._app_detector.stop()
         self.hook.stop()
+        self._keyboard_hid.stop()
+
+    # ------------------------------------------------------------------
+    # Keyboard public API
+    # ------------------------------------------------------------------
+    def set_keyboard_connection_callback(self, cb):
+        """Register ``cb(connected: bool)`` invoked on keyboard connect/disconnect."""
+        self._keyboard_connection_cb = cb
+
+    def set_keyboard_battery_callback(self, cb):
+        """Register ``cb(level: int)`` invoked when keyboard battery level is read."""
+        self._keyboard_battery_cb = cb
+
+    @property
+    def keyboard_connected(self):
+        return self._keyboard_hid.connected
+
+    @property
+    def connected_keyboard(self):
+        return self._keyboard_hid.connected_keyboard
+
+    def reload_keyboard_mappings(self):
+        """Reload config and re-wire keyboard hooks only."""
+        with self._lock:
+            self.cfg = load_config()
+            self._current_kb_profile = (
+                self.cfg.get("devices", {}).get("keyboard", {}).get("active_profile", "default")
+            )
+            self._setup_keyboard_hooks()
