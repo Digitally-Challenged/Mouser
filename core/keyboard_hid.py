@@ -61,11 +61,14 @@ KEYBOARD_CANDIDATE_PIDS: frozenset = frozenset({0xB366, 0xB367, BOLT_RECEIVER_PI
 class KeyboardHidListener:
     """Background thread: diverts remappable keys and listens via HID++."""
 
-    def __init__(self, on_key_diverted=None, on_connect=None, on_disconnect=None):
+    def __init__(self, on_key_diverted=None, on_connect=None, on_disconnect=None,
+                 shared_dev=None, shared_dev_idx=None):
         self._on_key_diverted = on_key_diverted
         self._on_connect = on_connect
         self._on_disconnect = on_disconnect
         self._dev = None
+        self._shared_dev = shared_dev    # BoltChannel from BoltMultiplexer
+        self._shared_dev_idx = shared_dev_idx
         self._thread = None
         self._running = False
         self._feat_idx = None           # REPROG_CONTROLS_V4 feature index
@@ -314,8 +317,14 @@ class KeyboardHidListener:
         lo = cid & 0xFF
         return self._request(self._feat_idx, 3, [hi, lo, flags, 0x00, 0x00])
 
-    def _discover_and_divert_keys(self) -> bool:
-        """Enumerate REPROG_V4 controls; divert all divertable+reprogrammable keys."""
+    def _discover_and_divert_keys(self, only_cids: set[int] | None = None) -> bool:
+        """Enumerate REPROG_V4 controls; divert keys that have mappings.
+
+        If *only_cids* is provided, only those CIDs are diverted (the rest
+        keep their default OS behaviour so keys like Caps Lock still work).
+        If *only_cids* is None or empty, discovers controls but diverts nothing
+        — returns True so the connection stays alive for future divert calls.
+        """
         if self._feat_idx is None:
             return False
         resp = self._request(self._feat_idx, 0, [])
@@ -326,54 +335,62 @@ class KeyboardHidListener:
         count = params[0] if params else 0
         print(f"[KeyboardHid] REPROG_V4 exposes {count} controls")
 
-        diverted_any = False
+        self._available_cids = set()
         for index in range(count):
             key_resp = self._request(self._feat_idx, 1, [index])
             if not key_resp:
-                print(f"[KeyboardHid] Failed to read control info for index {index}")
                 continue
             _, _, _, _, key_params = key_resp
             if len(key_params) < 9:
-                print(f"[KeyboardHid] Short control info for index {index}: "
-                      f"[{_hex_bytes(key_params)}]")
                 continue
 
             cid = (key_params[0] << 8) | key_params[1]
-            task = (key_params[2] << 8) | key_params[3]
             flags = key_params[4] | (key_params[8] << 8)
-            pos = key_params[5]
-            group = key_params[6]
-            gmask = key_params[7]
-
             divertable = bool(flags & 0x0020)
             reprogrammable = bool(flags & 0x0010)
 
-            print(
-                f"[KeyboardHid] Control idx={index} "
-                f"cid={_format_cid(cid)} task=0x{task:04X} "
-                f"flags=0x{flags:04X}[{_format_flags(flags, KEY_FLAG_BITS)}] "
-                f"group={group} gmask=0x{gmask:02X} pos={pos}"
-            )
-
             if cid in NON_DIVERTABLE_CIDS:
-                print(f"[KeyboardHid]   Skipping {_format_cid(cid)} (non-divertable)")
                 continue
-            if not (divertable and reprogrammable):
-                print(f"[KeyboardHid]   Skipping {_format_cid(cid)} "
-                      f"(not divertable+reprogrammable)")
-                continue
+            if divertable and reprogrammable:
+                self._available_cids.add(cid)
 
-            # Divert: set divert + persist-divert bits
-            result = self._set_cid_reporting(cid, 0x03)
-            if result is not None:
-                self._diverted_cids.add(cid)
-                diverted_any = True
-                print(f"[KeyboardHid]   Diverted {_format_cid(cid)}: OK")
-            else:
-                print(f"[KeyboardHid]   Divert {_format_cid(cid)}: FAILED")
+        print(f"[KeyboardHid] {len(self._available_cids)} divertable keys available")
 
-        print(f"[KeyboardHid] Diverted {len(self._diverted_cids)} keys total")
-        return diverted_any
+        # Only divert keys that have actual mappings
+        if only_cids:
+            to_divert = only_cids & self._available_cids
+            for cid in to_divert:
+                result = self._set_cid_reporting(cid, 0x03)
+                if result is not None:
+                    self._diverted_cids.add(cid)
+                    print(f"[KeyboardHid]   Diverted {_format_cid(cid)}: OK")
+                else:
+                    print(f"[KeyboardHid]   Divert {_format_cid(cid)}: FAILED")
+            print(f"[KeyboardHid] Diverted {len(self._diverted_cids)} mapped keys")
+
+        return True  # connection is good even if no keys diverted yet
+
+    def divert_cids(self, cids: set[int]) -> None:
+        """Divert additional CIDs (called when mappings change at runtime)."""
+        if self._feat_idx is None:
+            return
+        new_cids = cids - self._diverted_cids
+        old_cids = self._diverted_cids - cids
+        # Undivert keys no longer mapped
+        for cid in old_cids:
+            hi = (cid >> 8) & 0xFF
+            lo = cid & 0xFF
+            try:
+                self._set_cid_reporting(cid, 0x02)  # restore default
+                self._diverted_cids.discard(cid)
+            except Exception:
+                pass
+        # Divert newly mapped keys
+        for cid in new_cids:
+            if cid in self._available_cids:
+                result = self._set_cid_reporting(cid, 0x03)
+                if result is not None:
+                    self._diverted_cids.add(cid)
 
     def _undivert_all(self) -> None:
         """Restore default key behaviour for all diverted keys (best-effort)."""
@@ -559,6 +576,10 @@ class KeyboardHidListener:
 
     def _try_connect(self) -> bool:
         """Open the vendor HID collection, discover features, divert keys."""
+        # If a shared Bolt channel was provided, use it directly
+        if self._shared_dev is not None and self._shared_dev_idx is not None:
+            return self._try_connect_shared()
+
         infos = vendor_hid_infos()
         if not infos:
             return False
@@ -718,6 +739,64 @@ class KeyboardHidListener:
 
         return False
 
+    def _try_connect_shared(self) -> bool:
+        """Connect using a pre-opened BoltChannel from BoltMultiplexer."""
+        self._dev = self._shared_dev
+        self._dev_idx = self._shared_dev_idx
+        self._feat_idx = None
+        self._backlight_idx = None
+        self._fn_inv_idx = None
+        self._battery_idx = None
+        self._battery_feature_id = None
+        self._diverted_cids = set()
+        self._held_cids = set()
+
+        fi = self._find_feature(FEAT_REPROG_V4)
+        if fi is None:
+            print(f"[KeyboardHid] Shared channel devIdx=0x{self._dev_idx:02X}: "
+                  "no REPROG_V4")
+            self._dev = None
+            return False
+
+        self._feat_idx = fi
+        print(f"[KeyboardHid] Found REPROG_V4 @0x{fi:02X} via shared Bolt channel "
+              f"devIdx=0x{self._dev_idx:02X}")
+
+        bl_fi = self._find_feature(FEAT_BACKLIGHT2)
+        if bl_fi:
+            self._backlight_idx = bl_fi
+            print(f"[KeyboardHid] Found BACKLIGHT2 @0x{bl_fi:02X}")
+
+        fn_fi = self._find_feature(FEAT_FN_INVERSION)
+        if fn_fi:
+            self._fn_inv_idx = fn_fi
+            print(f"[KeyboardHid] Found FN_INVERSION @0x{fn_fi:02X}")
+
+        batt_fi = self._find_feature(FEAT_UNIFIED_BATT)
+        if batt_fi:
+            self._battery_idx = batt_fi
+            self._battery_feature_id = FEAT_UNIFIED_BATT
+        else:
+            batt_fi = self._find_feature(FEAT_BATTERY_STATUS)
+            if batt_fi:
+                self._battery_idx = batt_fi
+                self._battery_feature_id = FEAT_BATTERY_STATUS
+
+        dev_name = self._query_device_name()
+        print(f"[KeyboardHid] Device name: {dev_name!r}")
+
+        if self._discover_and_divert_keys():
+            self._connected_keyboard = build_connected_keyboard_info(
+                product_id=None,
+                product_name=dev_name,
+                transport="bolt-shared",
+                source="bolt-mux",
+            )
+            return True
+
+        self._dev = None
+        return False
+
     def _main_loop(self) -> None:
         """Outer loop: connect -> listen -> reconnect on error/disconnect."""
         while self._running:
@@ -757,11 +836,13 @@ class KeyboardHidListener:
 
             # Cleanup before potential reconnect
             self._undivert_all()
-            try:
-                if self._dev:
-                    self._dev.close()
-            except Exception:
-                pass
+            if self._shared_dev is None:
+                # Only close if we own the device (not shared)
+                try:
+                    if self._dev:
+                        self._dev.close()
+                except Exception:
+                    pass
             self._dev = None
             self._feat_idx = None
             self._backlight_idx = None

@@ -8,6 +8,7 @@ import threading
 from core.mouse_hook import MouseHook, MouseEvent
 from core.keyboard_hid import KeyboardHidListener
 from core.keyboard_hook import KeyboardHook
+from core.bolt_mux import BoltMultiplexer
 from core.key_simulator import ACTIONS, execute_action
 from core.config import (
     load_config, get_active_mappings, get_profile_for_app,
@@ -52,6 +53,11 @@ class Engine:
         self.hook.set_gesture_callback(self._emit_gesture_event)
         self._setup_hooks()
         self.hook.set_connection_change_callback(self._on_connection_change)
+
+        # Bolt multiplexer — shared connection for mouse + keyboard on same receiver
+        self._bolt_mux = None
+        self._bolt_mouse_channel = None
+        self._bolt_keyboard_channel = None
 
         # Keyboard support
         self.keyboard_hook = KeyboardHook()
@@ -147,6 +153,7 @@ class Engine:
         """Register keyboard key->action mappings from config."""
         mappings = get_active_mappings(self.cfg, device="keyboard")
         self.keyboard_hook.reset()
+        mapped_cids: set[int] = set()
         for cid_str, action_id in mappings.items():
             if action_id == "none":
                 continue
@@ -154,7 +161,12 @@ class Engine:
                 cid = int(cid_str, 16) if isinstance(cid_str, str) else int(cid_str)
             except (ValueError, TypeError):
                 continue
+            mapped_cids.add(cid)
             self.keyboard_hook.register(cid, self._make_keyboard_handler(action_id))
+        # Tell the HID listener to only divert keys that have mappings
+        # (unmapped keys like Caps Lock keep their normal OS behaviour)
+        if self._keyboard_hid.connected and hasattr(self._keyboard_hid, 'divert_cids'):
+            self._keyboard_hid.divert_cids(mapped_cids)
 
     def _make_keyboard_handler(self, action_id):
         def handler(cid, pressed):
@@ -404,7 +416,106 @@ class Engine:
     def set_enabled(self, enabled):
         self._enabled = bool(enabled)
 
+    def _try_bolt_multiplexer(self):
+        """Try to open a shared Bolt receiver connection for both devices."""
+        from core.hidpp import FEAT_BACKLIGHT2, FEAT_REPROG_V4
+        mux = BoltMultiplexer()
+        if not mux.open():
+            return
+        print("[Engine] Bolt receiver opened — scanning device indices…")
+        indices = mux.scan_device_indices()
+        if not indices:
+            print("[Engine] No devices found on Bolt receiver")
+            mux.stop()
+            return
+
+        # Identify which index is mouse vs keyboard by probing for BACKLIGHT2
+        # (keyboards have it, mice don't)
+        mouse_idx = None
+        keyboard_idx = None
+        for idx in indices:
+            channel = mux.get_channel(idx)
+            # Quick probe: find REPROG_V4 then BACKLIGHT2
+            # We need to send IRoot queries through the multiplexer
+            from core.hidpp import LONG_ID, LONG_LEN, MY_SW, parse_report
+            import time
+
+            def _probe_feature(feat_id):
+                buf = [0] * LONG_LEN
+                buf[0] = LONG_ID
+                buf[1] = idx
+                buf[2] = 0x00  # IRoot
+                buf[3] = ((0 & 0x0F) << 4) | (MY_SW & 0x0F)
+                buf[4] = (feat_id >> 8) & 0xFF
+                buf[5] = feat_id & 0xFF
+                try:
+                    mux._write(buf)
+                except Exception:
+                    return None
+                deadline = time.time() + 1.0
+                while time.time() < deadline:
+                    data = channel.read(64, 300)
+                    if not data:
+                        continue
+                    parsed = parse_report(data)
+                    if parsed and parsed[0] == idx:
+                        _, r_feat, _, r_sw, r_params = parsed
+                        if r_feat == 0xFF:
+                            return None  # error
+                        if r_sw == MY_SW and r_params and r_params[0] != 0:
+                            return r_params[0]
+                        return None
+                return None
+
+            reprog = _probe_feature(FEAT_REPROG_V4)
+            if reprog is None:
+                continue
+            backlight = _probe_feature(FEAT_BACKLIGHT2)
+            if backlight is not None:
+                keyboard_idx = idx
+                print(f"[Engine] Bolt index {idx} → keyboard (has BACKLIGHT2)")
+            else:
+                mouse_idx = idx
+                print(f"[Engine] Bolt index {idx} → mouse (no BACKLIGHT2)")
+
+        if mouse_idx is None and keyboard_idx is None:
+            print("[Engine] No identifiable devices on Bolt receiver")
+            mux.stop()
+            return
+
+        # Start the multiplexer reader thread
+        mux.start()
+        self._bolt_mux = mux
+
+        if mouse_idx is not None:
+            self._bolt_mouse_channel = mux.get_channel(mouse_idx)
+            # Recreate the HidGestureListener on the mouse hook with shared channel
+            self.hook._hid_gesture = type(self.hook._hid_gesture)(
+                on_down=self.hook._hid_gesture._on_down,
+                on_up=self.hook._hid_gesture._on_up,
+                on_move=self.hook._hid_gesture._on_move,
+                on_connect=self.hook._hid_gesture._on_connect,
+                on_disconnect=self.hook._hid_gesture._on_disconnect,
+                on_action_ring_down=self.hook._hid_gesture._on_action_ring_down,
+                on_action_ring_up=self.hook._hid_gesture._on_action_ring_up,
+                shared_dev=self._bolt_mouse_channel,
+                shared_dev_idx=mouse_idx,
+            ) if self.hook._hid_gesture else None
+
+        if keyboard_idx is not None:
+            self._bolt_keyboard_channel = mux.get_channel(keyboard_idx)
+            self._keyboard_hid = KeyboardHidListener(
+                on_key_diverted=self._on_keyboard_key_event,
+                on_connect=self._on_keyboard_connect,
+                on_disconnect=self._on_keyboard_disconnect,
+                shared_dev=self._bolt_keyboard_channel,
+                shared_dev_idx=keyboard_idx,
+            )
+
     def start(self):
+        # Try Bolt multiplexer first (shared connection for both devices)
+        self._try_bolt_multiplexer()
+
         self.hook.start()
         self._keyboard_hid.start()
         self._app_detector.start()
@@ -435,6 +546,9 @@ class Engine:
         self._app_detector.stop()
         self.hook.stop()
         self._keyboard_hid.stop()
+        if self._bolt_mux:
+            self._bolt_mux.stop()
+            self._bolt_mux = None
 
     # ------------------------------------------------------------------
     # Keyboard public API

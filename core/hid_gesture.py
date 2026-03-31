@@ -58,7 +58,8 @@ class HidGestureListener:
 
     def __init__(self, on_down=None, on_up=None, on_move=None,
                  on_connect=None, on_disconnect=None,
-                 on_action_ring_down=None, on_action_ring_up=None):
+                 on_action_ring_down=None, on_action_ring_up=None,
+                 shared_dev=None, shared_dev_idx=None):
         self._on_down       = on_down
         self._on_up         = on_up
         self._on_move       = on_move
@@ -67,6 +68,8 @@ class HidGestureListener:
         self._on_action_ring_down = on_action_ring_down
         self._on_action_ring_up   = on_action_ring_up
         self._dev       = None          # hid.device()
+        self._shared_dev = shared_dev   # BoltChannel from BoltMultiplexer
+        self._shared_dev_idx = shared_dev_idx
         self._thread    = None
         self._running   = False
         self._feat_idx  = None          # feature index of REPROG_V4
@@ -567,6 +570,10 @@ class HidGestureListener:
 
     def _try_connect(self):
         """Open the vendor HID collection, discover features, divert."""
+        # If a shared Bolt channel was provided, use it directly
+        if self._shared_dev is not None and self._shared_dev_idx is not None:
+            return self._try_connect_shared()
+
         infos = self._vendor_hid_infos()
         if not infos:
             return False
@@ -697,6 +704,66 @@ class HidGestureListener:
 
         return False
 
+    def _try_connect_shared(self):
+        """Connect using a pre-opened BoltChannel from BoltMultiplexer."""
+        self._dev = self._shared_dev
+        self._dev_idx = self._shared_dev_idx
+        self._feat_idx = None
+        self._dpi_idx = None
+        self._battery_idx = None
+        self._battery_feature_id = None
+        self._gesture_cid = DEFAULT_GESTURE_CID
+        self._gesture_candidates = list(DEFAULT_GESTURE_CIDS)
+        self._rawxy_enabled = False
+
+        fi = self._find_feature(FEAT_REPROG_V4)
+        if fi is None:
+            print(f"[HidGesture] Shared channel devIdx=0x{self._dev_idx:02X}: "
+                  "no REPROG_V4")
+            self._dev = None
+            return False
+
+        self._feat_idx = fi
+        print(f"[HidGesture] Found REPROG_V4 @0x{fi:02X} via shared Bolt channel "
+              f"devIdx=0x{self._dev_idx:02X}")
+
+        device_spec = None
+        controls = self._discover_reprog_controls()
+        self._gesture_candidates = self._choose_gesture_candidates(
+            controls, device_spec=device_spec)
+        print("[HidGesture] Gesture CID candidates: "
+              + ", ".join(_format_cid(cid) for cid in self._gesture_candidates))
+
+        dpi_fi = self._find_feature(FEAT_ADJ_DPI)
+        if dpi_fi:
+            self._dpi_idx = dpi_fi
+            print(f"[HidGesture] Found ADJUSTABLE_DPI @0x{dpi_fi:02X}")
+
+        batt_fi = self._find_feature(FEAT_UNIFIED_BATT)
+        if batt_fi:
+            self._battery_idx = batt_fi
+            self._battery_feature_id = FEAT_UNIFIED_BATT
+            print(f"[HidGesture] Found UNIFIED_BATT @0x{batt_fi:02X}")
+        else:
+            batt_fi = self._find_feature(FEAT_BATTERY_STATUS)
+            if batt_fi:
+                self._battery_idx = batt_fi
+                self._battery_feature_id = FEAT_BATTERY_STATUS
+                print(f"[HidGesture] Found BATTERY_STATUS @0x{batt_fi:02X}")
+
+        if self._divert():
+            self._connected_device_info = build_connected_device_info(
+                product_id=None,
+                product_name=None,
+                transport="bolt-shared",
+                source="bolt-mux",
+                gesture_cids=self._gesture_candidates,
+            )
+            return True
+
+        self._dev = None
+        return False
+
     def _main_loop(self):
         """Outer loop: connect → listen → reconnect on error/disconnect."""
         while self._running:
@@ -733,11 +800,13 @@ class HidGestureListener:
 
             # Cleanup before potential reconnect
             self._undivert()
-            try:
-                if self._dev:
-                    self._dev.close()
-            except Exception:
-                pass
+            if self._shared_dev is None:
+                # Only close if we own the device (not shared)
+                try:
+                    if self._dev:
+                        self._dev.close()
+                except Exception:
+                    pass
             self._dev = None
             self._feat_idx = None
             self._dpi_idx = None
