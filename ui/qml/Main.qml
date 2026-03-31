@@ -11,9 +11,14 @@ ApplicationWindow {
     height: 700
     minimumWidth: 920
     minimumHeight: 620
-    title: backend.mouseConnected
-           ? "Mouser — " + backend.deviceDisplayName
-           : "Mouser"
+    title: {
+        var parts = ["Mouser"]
+        if (backend.mouseConnected)
+            parts.push(backend.deviceDisplayName)
+        if (backend.keyboardConnected)
+            parts.push("MX Mechanical")
+        return parts.join(" — ")
+    }
 
     property string appearanceMode: uiState.appearanceMode
     readonly property bool darkMode: appearanceMode === "dark"
@@ -71,10 +76,34 @@ ApplicationWindow {
 
                 Item { width: 1; height: 18 }
 
+                Row {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    spacing: 8
+
+                    Rectangle {
+                        width: 8; height: 8; radius: 4
+                        color: backend.mouseConnected ? root.theme.accent : root.theme.textTertiary
+                        ToolTip.visible: connMa1.containsMouse
+                        ToolTip.text: "Mouse"
+                        MouseArea { id: connMa1; anchors.fill: parent; hoverEnabled: true }
+                    }
+                    Rectangle {
+                        width: 8; height: 8; radius: 4
+                        color: backend.keyboardConnected ? root.theme.accent : root.theme.textTertiary
+                        ToolTip.visible: connMa2.containsMouse
+                        ToolTip.text: "Keyboard"
+                        MouseArea { id: connMa2; anchors.fill: parent; hoverEnabled: true }
+                    }
+                }
+
+                Item { width: 1; height: 10 }
+
                 Repeater {
                     model: [
                         { icon: "mouse-simple", tip: "Mouse & Profiles", page: 0 },
-                        { icon: "sliders-horizontal", tip: "Point & Scroll", page: 1 }
+                        { icon: "keyboard", tip: "Keyboard & Profiles", page: 2 },
+                        { icon: "sliders-horizontal", tip: "Point & Scroll", page: 1 },
+                        { icon: "lightbulb", tip: "Backlight & Fn Keys", page: 3 }
                     ]
 
                     delegate: FocusScope {
@@ -166,6 +195,14 @@ ApplicationWindow {
             Loader {
                 active: root.currentPage === 1 || item
                 source: "ScrollPage.qml"
+            }
+            Loader {
+                active: root.currentPage === 2 || item
+                sourceComponent: Component { KeyboardPage { anchors.fill: parent } }
+            }
+            Loader {
+                active: root.currentPage === 3 || item
+                sourceComponent: Component { BacklightPage { anchors.fill: parent } }
             }
         }
     }
