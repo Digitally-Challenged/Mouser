@@ -24,9 +24,95 @@ try:
 except ImportError:
     HIDAPI_OK = False
 
+# ── Constants ─────────────────────────────────────────────────────
+
+LOGI_VID       = 0x046D
+
+SHORT_ID       = 0x10        # HID++ short report (7 bytes total)
+LONG_ID        = 0x11        # HID++ long  report (20 bytes total)
+SHORT_LEN      = 7
+LONG_LEN       = 20
+
+BT_DEV_IDX     = 0xFF        # device-index for direct Bluetooth
+FEAT_IROOT     = 0x0000
+FEAT_REPROG_V4 = 0x1B04      # Reprogrammable Controls V4
+FEAT_ADJ_DPI   = 0x2201      # Adjustable DPI
+FEAT_UNIFIED_BATT   = 0x1004      # Unified Battery (preferred)
+FEAT_BATTERY_STATUS = 0x1000      # Battery Status (fallback)
+
+# Keyboard feature constants
+FEAT_BACKLIGHT2    = 0x1982   # Keyboard backlight control
+FEAT_FN_INVERSION  = 0x40A3   # Fn key inversion toggle
+FEAT_DISABLE_KEYS  = 0x4521   # Disable specific keys
+
+MY_SW          = 0x0A        # arbitrary software-id used in our requests
+
+HIDPP_ERROR_NAMES = {
+    0x01: "UNKNOWN",
+    0x02: "INVALID_ARGUMENT",
+    0x03: "OUT_OF_RANGE",
+    0x04: "HARDWARE_ERROR",
+    0x05: "LOGITECH_ERROR",
+    0x06: "INVALID_FEATURE_INDEX",
+    0x07: "INVALID_FUNCTION",
+    0x08: "BUSY",
+    0x09: "UNSUPPORTED",
+}
+
+KEY_FLAG_BITS = (
+    (0x0001, "mse"),
+    (0x0002, "fn"),
+    (0x0004, "nonstandard"),
+    (0x0008, "fn_sensitive"),
+    (0x0010, "reprogrammable"),
+    (0x0020, "divertable"),
+    (0x0040, "persist_divertable"),
+    (0x0080, "virtual"),
+    (0x0100, "raw_xy"),
+    (0x0200, "force_raw_xy"),
+    (0x0400, "analytics"),
+    (0x0800, "raw_wheel"),
+)
+
+MAPPING_FLAG_BITS = (
+    (0x0001, "diverted"),
+    (0x0004, "persist_diverted"),
+    (0x0010, "raw_xy_diverted"),
+    (0x0040, "force_raw_xy_diverted"),
+    (0x0100, "analytics_reporting"),
+    (0x0400, "raw_wheel"),
+)
+
+KNOWN_CID_NAMES = {
+    # Mouse CIDs
+    0x00C3: "Mouse Gesture Button",
+    0x00C4: "Smart Shift",
+    0x00D7: "Virtual Gesture Button",
+    0x01A0: "Actions Ring (Haptic)",
+    # Keyboard CIDs
+    0x00C7: "Fn Key",
+    0x00C8: "Lock Key",
+    0x00C9: "Brightness Down",
+    0x00CA: "Brightness Up",
+    0x00CB: "Host Switch 1",
+    0x00CC: "Host Switch 2",
+    0x00CD: "Host Switch 3",
+    0x00D0: "Mic Mute",
+    0x00D1: "Emoji Key",
+    0x00D2: "Snipping Tool",
+    0x00D3: "Dictation",
+    0x00D5: "Do Not Disturb",
+    0x00E0: "Smart Actions (F9)",
+    0x00E1: "Smart Actions (F10)",
+    0x00E2: "Smart Actions (F11)",
+    0x00E3: "Smart Actions (F12)",
+    0x0108: "Voice Assistant",
+    0x0141: "Globe/Language Key",
+}
+
 # ── macOS native HID (IOKit) setup ───────────────────────────────
 
-_MAC_NATIVE_OK = False
+MAC_NATIVE_OK = False
 if sys.platform == "darwin":
     try:
         import ctypes
@@ -102,7 +188,7 @@ if sys.platform == "darwin":
         _K_IOHID_REPORT_TYPE_OUTPUT = 1
         _K_CF_RUN_LOOP_DEFAULT_MODE = c_void_p.in_dll(_cf, "kCFRunLoopDefaultMode")
 
-        _MAC_NATIVE_OK = True
+        MAC_NATIVE_OK = True
     except Exception as exc:
         print(f"[HidPP] macOS native HID unavailable: {exc}")
 
@@ -128,7 +214,7 @@ def set_backend_preference(preference):
     if normalized == "iokit":
         if sys.platform != "darwin":
             raise ValueError("iokit backend is only available on macOS")
-        if not _MAC_NATIVE_OK:
+        if not MAC_NATIVE_OK:
             raise ValueError("iokit backend requested but native macOS HID is unavailable")
 
     global _BACKEND_PREFERENCE
@@ -142,7 +228,7 @@ def get_backend_preference():
 
 # ── macOS native HID device wrapper ──────────────────────────────
 
-if _MAC_NATIVE_OK:
+if MAC_NATIVE_OK:
     class MacNativeHidDevice:
         """Minimal IOHIDDevice wrapper for Logitech BLE HID++ on macOS."""
 
@@ -427,92 +513,6 @@ if _MAC_NATIVE_OK:
                         continue
                     return b""
 
-# ── Constants ─────────────────────────────────────────────────────
-
-LOGI_VID       = 0x046D
-
-SHORT_ID       = 0x10        # HID++ short report (7 bytes total)
-LONG_ID        = 0x11        # HID++ long  report (20 bytes total)
-SHORT_LEN      = 7
-LONG_LEN       = 20
-
-BT_DEV_IDX     = 0xFF        # device-index for direct Bluetooth
-FEAT_IROOT     = 0x0000
-FEAT_REPROG_V4 = 0x1B04      # Reprogrammable Controls V4
-FEAT_ADJ_DPI   = 0x2201      # Adjustable DPI
-FEAT_UNIFIED_BATT   = 0x1004      # Unified Battery (preferred)
-FEAT_BATTERY_STATUS = 0x1000      # Battery Status (fallback)
-
-# Keyboard feature constants
-FEAT_BACKLIGHT2    = 0x1982   # Keyboard backlight control
-FEAT_FN_INVERSION  = 0x40A3   # Fn key inversion toggle
-FEAT_DISABLE_KEYS  = 0x4521   # Disable specific keys
-
-MY_SW          = 0x0A        # arbitrary software-id used in our requests
-
-HIDPP_ERROR_NAMES = {
-    0x01: "UNKNOWN",
-    0x02: "INVALID_ARGUMENT",
-    0x03: "OUT_OF_RANGE",
-    0x04: "HARDWARE_ERROR",
-    0x05: "LOGITECH_ERROR",
-    0x06: "INVALID_FEATURE_INDEX",
-    0x07: "INVALID_FUNCTION",
-    0x08: "BUSY",
-    0x09: "UNSUPPORTED",
-}
-
-KEY_FLAG_BITS = (
-    (0x0001, "mse"),
-    (0x0002, "fn"),
-    (0x0004, "nonstandard"),
-    (0x0008, "fn_sensitive"),
-    (0x0010, "reprogrammable"),
-    (0x0020, "divertable"),
-    (0x0040, "persist_divertable"),
-    (0x0080, "virtual"),
-    (0x0100, "raw_xy"),
-    (0x0200, "force_raw_xy"),
-    (0x0400, "analytics"),
-    (0x0800, "raw_wheel"),
-)
-
-MAPPING_FLAG_BITS = (
-    (0x0001, "diverted"),
-    (0x0004, "persist_diverted"),
-    (0x0010, "raw_xy_diverted"),
-    (0x0040, "force_raw_xy_diverted"),
-    (0x0100, "analytics_reporting"),
-    (0x0400, "raw_wheel"),
-)
-
-KNOWN_CID_NAMES = {
-    # Mouse CIDs
-    0x00C3: "Mouse Gesture Button",
-    0x00C4: "Smart Shift",
-    0x00D7: "Virtual Gesture Button",
-    0x01A0: "Actions Ring (Haptic)",
-    # Keyboard CIDs
-    0x00C7: "Fn Key",
-    0x00C8: "Lock Key",
-    0x00C9: "Brightness Down",
-    0x00CA: "Brightness Up",
-    0x00CB: "Host Switch 1",
-    0x00CC: "Host Switch 2",
-    0x00CD: "Host Switch 3",
-    0x00D0: "Mic Mute",
-    0x00D1: "Emoji Key",
-    0x00D2: "Snipping Tool",
-    0x00D3: "Dictation",
-    0x00D5: "Do Not Disturb",
-    0x00E0: "Smart Actions (F9)",
-    0x00E1: "Smart Actions (F10)",
-    0x00E2: "Smart Actions (F11)",
-    0x00E3: "Smart Actions (F12)",
-    0x0108: "Voice Assistant",
-    0x0141: "Globe/Language Key",
-}
-
 
 # ── Helpers ───────────────────────────────────────────────────────
 
@@ -585,7 +585,7 @@ def vendor_hid_infos():
 
     if (
         sys.platform == "darwin"
-        and _MAC_NATIVE_OK
+        and MAC_NATIVE_OK
         and _BACKEND_PREFERENCE in ("auto", "iokit")
     ):
         for info in MacNativeHidDevice.enumerate_infos():

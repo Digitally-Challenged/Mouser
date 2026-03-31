@@ -1,4 +1,5 @@
 import unittest
+import unittest.mock
 
 from core import hidpp
 
@@ -151,6 +152,35 @@ class BackendPreferenceTests(unittest.TestCase):
     def test_default_backend_uses_auto_elsewhere(self):
         self.assertEqual(hidpp._default_backend_preference("win32"), "auto")
         self.assertEqual(hidpp._default_backend_preference("linux"), "auto")
+
+
+class SetBackendPreferenceTests(unittest.TestCase):
+    def setUp(self):
+        # Save original preference so tests don't leak state
+        self._original = hidpp.get_backend_preference()
+
+    def tearDown(self):
+        hidpp._BACKEND_PREFERENCE = self._original
+
+    def test_set_auto(self):
+        hidpp.set_backend_preference("auto")
+        self.assertEqual(hidpp.get_backend_preference(), "auto")
+
+    def test_set_invalid_raises(self):
+        with self.assertRaises(ValueError):
+            hidpp.set_backend_preference("invalid_backend")
+
+    def test_get_returns_current(self):
+        original = hidpp.get_backend_preference()
+        self.assertIn(original, {"auto", "hidapi", "iokit"})
+
+
+class VendorHidInfosTests(unittest.TestCase):
+    def test_vendor_hid_infos_empty_when_no_backend(self):
+        with unittest.mock.patch.object(hidpp, 'HIDAPI_OK', False), \
+             unittest.mock.patch.object(hidpp, 'MAC_NATIVE_OK', False):
+            result = hidpp.vendor_hid_infos()
+            self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

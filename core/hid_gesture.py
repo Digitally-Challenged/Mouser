@@ -36,12 +36,9 @@ from core.hidpp import (
     vendor_hid_infos,
 )
 import core.hidpp as _hidpp
-_MAC_NATIVE_OK = _hidpp._MAC_NATIVE_OK
+_MAC_NATIVE_OK = _hidpp.MAC_NATIVE_OK
 if _MAC_NATIVE_OK:
     _MacNativeHidDevice = _hidpp.MacNativeHidDevice
-
-# Re-export _default_backend_preference for tests that reference it
-_default_backend_preference = _hidpp._default_backend_preference
 
 # hidapi device module — needed for open_path in _try_connect
 try:
@@ -574,7 +571,7 @@ class HidGestureListener:
         if not infos:
             return False
 
-        print(f"[HidGesture] Backend preference: {_hidpp._BACKEND_PREFERENCE}")
+        print(f"[HidGesture] Backend preference: {_hidpp.get_backend_preference()}")
         print(f"[HidGesture] Candidate HID interfaces: {len(infos)}")
         for info in infos:
             pid = int(info.get("product_id", 0) or 0)
@@ -604,12 +601,12 @@ class HidGestureListener:
             )
             self._rawxy_enabled = False
             open_attempts = []
-            if _hidpp._BACKEND_PREFERENCE in ("auto", "hidapi") and info.get("path"):
+            if _hidpp.get_backend_preference() in ("auto", "hidapi") and info.get("path"):
                 open_attempts.append(("hidapi", info))
             if (
                 sys.platform == "darwin"
                 and _MAC_NATIVE_OK
-                and _hidpp._BACKEND_PREFERENCE in ("auto", "iokit")
+                and _hidpp.get_backend_preference() in ("auto", "iokit")
             ):
                 open_attempts.extend([
                     ("iokit-exact", info),

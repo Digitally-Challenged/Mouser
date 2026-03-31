@@ -1,15 +1,16 @@
 import unittest
 
 from core import hid_gesture
+from core import hidpp
 
 
 class HidBackendPreferenceTests(unittest.TestCase):
     def test_default_backend_uses_iokit_on_macos(self):
-        self.assertEqual(hid_gesture._default_backend_preference("darwin"), "iokit")
+        self.assertEqual(hidpp._default_backend_preference("darwin"), "iokit")
 
     def test_default_backend_uses_auto_elsewhere(self):
-        self.assertEqual(hid_gesture._default_backend_preference("win32"), "auto")
-        self.assertEqual(hid_gesture._default_backend_preference("linux"), "auto")
+        self.assertEqual(hidpp._default_backend_preference("win32"), "auto")
+        self.assertEqual(hidpp._default_backend_preference("linux"), "auto")
 
 
 class GestureCandidateSelectionTests(unittest.TestCase):
