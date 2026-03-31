@@ -3,6 +3,7 @@ Configuration manager — loads/saves button mappings to a JSON file.
 Supports per-application profiles (for future use).
 """
 
+import copy
 import json
 import os
 import sys
@@ -96,6 +97,41 @@ DEFAULT_CONFIG = {
     },
 }
 
+DEFAULT_KEYBOARD_CONFIG = {
+    "active_profile": "default",
+    "profiles": {
+        "default": {
+            "label": "Default (All Apps)",
+            "apps": [],
+            "mappings": {},
+        }
+    },
+    "settings": {
+        "fn_inversion": False,
+        "backlight_enabled": True,
+        "backlight_brightness": 80,
+        "backlight_mode": "auto",
+        "backlight_timeout_hands_out": 30,
+        "backlight_timeout_hands_in": 300,
+    },
+}
+
+
+def _make_default_v5():
+    """Return a fresh v5 config with per-device sections."""
+    return {
+        "version": 5,
+        "devices": {
+            "mouse": copy.deepcopy({
+                "active_profile": DEFAULT_CONFIG["active_profile"],
+                "profiles": DEFAULT_CONFIG["profiles"],
+                "settings": DEFAULT_CONFIG["settings"],
+            }),
+            "keyboard": copy.deepcopy(DEFAULT_KEYBOARD_CONFIG),
+        },
+    }
+
+
 # Known applications for per-app profiles
 # Note: Modern UWP apps appear as their package exe (e.g. Microsoft.Media.Player.exe)
 # thanks to ApplicationFrameHost child-window resolution in app_detector.py.
@@ -147,13 +183,12 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
-            # Merge any missing keys from default
             cfg = _migrate(cfg)
-            cfg = _merge_defaults(cfg, DEFAULT_CONFIG)
+            cfg = _merge_defaults(cfg, _make_default_v5())
             return cfg
         except Exception as e:
             print(f"[Config] Error loading config: {e}")
-    return json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
+    return _make_default_v5()
 
 
 def save_config(cfg):
@@ -163,33 +198,47 @@ def save_config(cfg):
         json.dump(cfg, f, indent=2)
 
 
-def get_active_mappings(cfg):
+def get_active_mappings(cfg, device="mouse"):
     """Return the mappings dict for the currently active profile."""
-    profile_name = cfg.get("active_profile", "default")
-    profiles = cfg.get("profiles", {})
+    device_cfg = cfg.get("devices", {}).get(device, {})
+    profile_name = device_cfg.get("active_profile", "default")
+    profiles = device_cfg.get("profiles", {})
     profile = profiles.get(profile_name, profiles.get("default", {}))
-    return profile.get("mappings", DEFAULT_CONFIG["profiles"]["default"]["mappings"])
+    default_mappings = (
+        DEFAULT_CONFIG["profiles"]["default"]["mappings"]
+        if device == "mouse"
+        else {}
+    )
+    return profile.get("mappings", default_mappings)
 
 
-def set_mapping(cfg, button, action_id, profile=None):
+def set_mapping(cfg, button, action_id, profile=None, device="mouse"):
     """Set a mapping for a button in the given profile (or active profile)."""
+    device_cfg = cfg.setdefault("devices", {}).setdefault(device, {})
     if profile is None:
-        profile = cfg.get("active_profile", "default")
-    cfg["profiles"].setdefault(profile, {
+        profile = device_cfg.get("active_profile", "default")
+    default_mappings = (
+        dict(DEFAULT_CONFIG["profiles"]["default"]["mappings"])
+        if device == "mouse"
+        else {}
+    )
+    device_cfg.setdefault("profiles", {}).setdefault(profile, {
         "label": profile,
-        "mappings": dict(DEFAULT_CONFIG["profiles"]["default"]["mappings"]),
+        "mappings": default_mappings,
     })
-    cfg["profiles"][profile]["mappings"][button] = action_id
+    device_cfg["profiles"][profile]["mappings"][button] = action_id
     save_config(cfg)
     return cfg
 
 
-def create_profile(cfg, name, label=None, copy_from="default", apps=None):
+def create_profile(cfg, name, label=None, copy_from="default", apps=None, device="mouse"):
     """Create a new profile, optionally copying from an existing one."""
     if label is None:
         label = name
-    source = cfg["profiles"].get(copy_from, cfg["profiles"].get("default", {}))
-    cfg["profiles"][name] = {
+    device_cfg = cfg.setdefault("devices", {}).setdefault(device, {})
+    profiles = device_cfg.setdefault("profiles", {})
+    source = profiles.get(copy_from, profiles.get("default", {}))
+    profiles[name] = {
         "label": label,
         "apps": apps if apps is not None else [],
         "mappings": dict(source.get("mappings", {})),
@@ -198,13 +247,14 @@ def create_profile(cfg, name, label=None, copy_from="default", apps=None):
     return cfg
 
 
-def delete_profile(cfg, name):
+def delete_profile(cfg, name, device="mouse"):
     """Delete a profile (cannot delete 'default')."""
     if name == "default":
         return cfg
-    cfg["profiles"].pop(name, None)
-    if cfg["active_profile"] == name:
-        cfg["active_profile"] = "default"
+    device_cfg = cfg.setdefault("devices", {}).setdefault(device, {})
+    device_cfg.setdefault("profiles", {}).pop(name, None)
+    if device_cfg.get("active_profile") == name:
+        device_cfg["active_profile"] = "default"
     save_config(cfg)
     return cfg
 
@@ -214,13 +264,14 @@ def resolve_app_for_config(spec: str):
     return app_catalog.resolve_app_spec(spec)
 
 
-def get_profile_for_app(cfg, exe_name):
+def get_profile_for_app(cfg, exe_name, device="mouse"):
     """Return the profile name that matches the given executable, or 'default'."""
     if not exe_name:
         return "default"
     entry = resolve_app_for_config(exe_name)
     aliases = {a.lower() for a in ([entry["id"]] + entry.get("aliases", []))} if entry else {exe_name.lower()}
-    for pname, pdata in cfg.get("profiles", {}).items():
+    device_cfg = cfg.get("devices", {}).get(device, {})
+    for pname, pdata in device_cfg.get("profiles", {}).items():
         for app in pdata.get("apps", []):
             if app.lower() in aliases:
                 return pname
@@ -258,17 +309,40 @@ def _migrate(cfg):
         settings.setdefault("device_layout_overrides", {})
         cfg["version"] = 4
 
-    cfg.setdefault("settings", {})
-    cfg["settings"].setdefault("appearance_mode", "system")
-    cfg["settings"].setdefault("debug_mode", False)
-    cfg["settings"].setdefault("device_layout_overrides", {})
+    # Pre-v5 fixups: run while profiles/settings are still top-level
+    if cfg.get("version", 1) < 5:
+        cfg.setdefault("settings", {})
+        cfg["settings"].setdefault("appearance_mode", "system")
+        cfg["settings"].setdefault("debug_mode", False)
+        cfg["settings"].setdefault("device_layout_overrides", {})
 
-    # Always migrate old wmplayer.exe → Microsoft.Media.Player.exe in profile apps
-    for pdata in cfg.get("profiles", {}).values():
-        apps = pdata.get("apps", [])
-        for i, a in enumerate(apps):
-            if a.lower() == "wmplayer.exe":
-                apps[i] = "Microsoft.Media.Player.exe"
+        # Always migrate old wmplayer.exe → Microsoft.Media.Player.exe
+        for pdata in cfg.get("profiles", {}).values():
+            apps = pdata.get("apps", [])
+            for i, a in enumerate(apps):
+                if a.lower() == "wmplayer.exe":
+                    apps[i] = "Microsoft.Media.Player.exe"
+
+    if cfg.get("version", 1) < 5:
+        mouse_data = {
+            "active_profile": cfg.pop("active_profile", "default"),
+            "profiles": cfg.pop("profiles", {}),
+            "settings": cfg.pop("settings", {}),
+        }
+        cfg["devices"] = {
+            "mouse": mouse_data,
+            "keyboard": json.loads(json.dumps(DEFAULT_KEYBOARD_CONFIG)),
+        }
+        cfg["version"] = 5
+
+    # Post-v5 wmplayer fixup: run on both device sections
+    for device_key in ("mouse", "keyboard"):
+        device_cfg = cfg.get("devices", {}).get(device_key, {})
+        for pdata in device_cfg.get("profiles", {}).values():
+            apps = pdata.get("apps", [])
+            for i, a in enumerate(apps):
+                if a.lower() == "wmplayer.exe":
+                    apps[i] = "Microsoft.Media.Player.exe"
 
     return cfg
 

@@ -30,24 +30,26 @@ class ConfigMigrationTests(unittest.TestCase):
 
         migrated = config._migrate(legacy)
 
-        self.assertEqual(migrated["version"], 4)
-        self.assertEqual(migrated["profiles"]["default"]["apps"], [])
-        self.assertFalse(migrated["settings"]["invert_hscroll"])
-        self.assertFalse(migrated["settings"]["invert_vscroll"])
-        self.assertEqual(migrated["settings"]["dpi"], 1000)
-        self.assertEqual(migrated["settings"]["gesture_threshold"], 50)
-        self.assertEqual(migrated["settings"]["gesture_deadzone"], 40)
-        self.assertEqual(migrated["settings"]["gesture_timeout_ms"], 3000)
-        self.assertEqual(migrated["settings"]["gesture_cooldown_ms"], 500)
-        self.assertEqual(migrated["settings"]["appearance_mode"], "system")
-        self.assertFalse(migrated["settings"]["debug_mode"])
-        self.assertEqual(migrated["settings"]["device_layout_overrides"], {})
+        # Now migrates all the way to v5
+        self.assertEqual(migrated["version"], 5)
+        mouse = migrated["devices"]["mouse"]
+        self.assertEqual(mouse["profiles"]["default"]["apps"], [])
+        self.assertFalse(mouse["settings"]["invert_hscroll"])
+        self.assertFalse(mouse["settings"]["invert_vscroll"])
+        self.assertEqual(mouse["settings"]["dpi"], 1000)
+        self.assertEqual(mouse["settings"]["gesture_threshold"], 50)
+        self.assertEqual(mouse["settings"]["gesture_deadzone"], 40)
+        self.assertEqual(mouse["settings"]["gesture_timeout_ms"], 3000)
+        self.assertEqual(mouse["settings"]["gesture_cooldown_ms"], 500)
+        self.assertEqual(mouse["settings"]["appearance_mode"], "system")
+        self.assertFalse(mouse["settings"]["debug_mode"])
+        self.assertEqual(mouse["settings"]["device_layout_overrides"], {})
         self.assertEqual(
-            migrated["profiles"]["default"]["mappings"]["gesture"], "none"
+            mouse["profiles"]["default"]["mappings"]["gesture"], "none"
         )
         for key in config.GESTURE_DIRECTION_BUTTONS:
             self.assertEqual(
-                migrated["profiles"]["default"]["mappings"][key], "none"
+                mouse["profiles"]["default"]["mappings"][key], "none"
             )
 
     def test_migrate_updates_media_player_profile_apps(self):
@@ -64,13 +66,14 @@ class ConfigMigrationTests(unittest.TestCase):
 
         migrated = config._migrate(cfg)
 
+        mouse = migrated["devices"]["mouse"]
         self.assertEqual(
-            migrated["profiles"]["media"]["apps"],
+            mouse["profiles"]["media"]["apps"],
             ["Microsoft.Media.Player.exe", "VLC.exe"],
         )
-        self.assertEqual(migrated["settings"]["appearance_mode"], "system")
-        self.assertFalse(migrated["settings"]["debug_mode"])
-        self.assertEqual(migrated["settings"]["device_layout_overrides"], {})
+        self.assertEqual(mouse["settings"]["appearance_mode"], "system")
+        self.assertFalse(mouse["settings"]["debug_mode"])
+        self.assertEqual(mouse["settings"]["device_layout_overrides"], {})
 
     def test_load_config_merges_missing_defaults_from_disk(self):
         partial = {
@@ -100,26 +103,26 @@ class ConfigMigrationTests(unittest.TestCase):
             ):
                 loaded = config.load_config()
 
-        self.assertEqual(loaded["settings"]["dpi"], 800)
-        self.assertEqual(loaded["settings"]["gesture_threshold"], 50)
-        self.assertEqual(loaded["settings"]["appearance_mode"], "system")
-        self.assertFalse(loaded["settings"]["debug_mode"])
-        self.assertEqual(loaded["settings"]["device_layout_overrides"], {})
-        self.assertEqual(loaded["profiles"]["default"]["mappings"]["middle"], "copy")
+        mouse = loaded["devices"]["mouse"]
+        self.assertEqual(mouse["settings"]["dpi"], 800)
+        self.assertEqual(mouse["settings"]["gesture_threshold"], 50)
+        self.assertEqual(mouse["settings"]["appearance_mode"], "system")
+        self.assertFalse(mouse["settings"]["debug_mode"])
+        self.assertEqual(mouse["settings"]["device_layout_overrides"], {})
+        self.assertEqual(mouse["profiles"]["default"]["mappings"]["middle"], "copy")
         self.assertEqual(
-            loaded["profiles"]["default"]["mappings"]["xbutton1"], "alt_tab"
+            mouse["profiles"]["default"]["mappings"]["xbutton1"], "alt_tab"
         )
         self.assertEqual(
-            loaded["profiles"]["default"]["mappings"]["gesture_left"], "none"
+            mouse["profiles"]["default"]["mappings"]["gesture_left"], "none"
         )
 
     def test_get_profile_for_app_matches_aliases(self):
-        cfg = {
-            "app_overrides": {},
-            "profiles": {
-                "default": {"apps": []},
-                "chrome": {"apps": ["Google Chrome"]},
-            }
+        cfg = config._make_default_v5()
+        cfg["devices"]["mouse"]["profiles"]["chrome"] = {
+            "label": "Chrome",
+            "apps": ["Google Chrome"],
+            "mappings": {},
         }
 
         with patch.object(
@@ -196,12 +199,11 @@ class AppCatalogTests(unittest.TestCase):
         self.assertEqual(resolved["label"], "Windows Terminal")
 
     def test_get_profile_for_app_matches_windows_full_path(self):
-        cfg = {
-            "app_overrides": {},
-            "profiles": {
-                "default": {"apps": []},
-                "terminal": {"apps": ["WindowsTerminal.exe"]},
-            },
+        cfg = config._make_default_v5()
+        cfg["devices"]["mouse"]["profiles"]["terminal"] = {
+            "label": "Terminal",
+            "apps": ["WindowsTerminal.exe"],
+            "mappings": {},
         }
 
         with patch.object(
@@ -257,6 +259,99 @@ class AppCatalogTests(unittest.TestCase):
                 app_catalog._windows_registry_path(spec, entries),
                 r"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
             )
+
+
+class ConfigMigrationV5Tests(unittest.TestCase):
+    def test_migrate_v4_wraps_under_devices_mouse(self):
+        v4 = {
+            "version": 4,
+            "active_profile": "default",
+            "profiles": {
+                "default": {
+                    "label": "Default (All Apps)",
+                    "apps": [],
+                    "mappings": {"middle": "none", "xbutton1": "alt_tab"},
+                }
+            },
+            "settings": {
+                "dpi": 1000,
+                "invert_hscroll": False,
+                "appearance_mode": "system",
+                "debug_mode": False,
+                "device_layout_overrides": {},
+            },
+        }
+        migrated = config._migrate(v4)
+        self.assertEqual(migrated["version"], 5)
+        self.assertIn("devices", migrated)
+        mouse = migrated["devices"]["mouse"]
+        self.assertEqual(mouse["active_profile"], "default")
+        self.assertEqual(mouse["profiles"]["default"]["mappings"]["xbutton1"], "alt_tab")
+        self.assertEqual(mouse["settings"]["dpi"], 1000)
+        kb = migrated["devices"]["keyboard"]
+        self.assertEqual(kb["active_profile"], "default")
+        self.assertEqual(kb["profiles"]["default"]["mappings"], {})
+        self.assertFalse(kb["settings"]["fn_inversion"])
+        self.assertTrue(kb["settings"]["backlight_enabled"])
+        # Top-level profiles/settings removed
+        self.assertNotIn("profiles", migrated)
+        self.assertNotIn("active_profile", migrated)
+
+    def test_migrate_v5_is_noop(self):
+        v5 = config._make_default_v5()
+        v5["devices"]["mouse"]["settings"]["dpi"] = 2000
+        migrated = config._migrate(v5)
+        self.assertEqual(migrated["version"], 5)
+        self.assertEqual(migrated["devices"]["mouse"]["settings"]["dpi"], 2000)
+
+
+class ConfigDeviceAccessTests(unittest.TestCase):
+    def test_get_active_mouse_mappings(self):
+        cfg = config._make_default_v5()
+        cfg["devices"]["mouse"]["profiles"]["default"]["mappings"]["xbutton1"] = "alt_tab"
+        result = config.get_active_mappings(cfg, device="mouse")
+        self.assertEqual(result["xbutton1"], "alt_tab")
+
+    def test_get_active_keyboard_mappings(self):
+        cfg = config._make_default_v5()
+        cfg["devices"]["keyboard"]["profiles"]["default"]["mappings"]["0x010A"] = "alt_tab"
+        result = config.get_active_mappings(cfg, device="keyboard")
+        self.assertEqual(result["0x010A"], "alt_tab")
+
+    def test_set_keyboard_mapping(self):
+        cfg = config._make_default_v5()
+        with patch("core.config.save_config"):
+            config.set_mapping(cfg, "0x010A", "play_pause", device="keyboard")
+        self.assertEqual(
+            cfg["devices"]["keyboard"]["profiles"]["default"]["mappings"]["0x010A"],
+            "play_pause",
+        )
+
+    def test_get_active_mappings_defaults_to_mouse(self):
+        cfg = config._make_default_v5()
+        result = config.get_active_mappings(cfg)
+        self.assertIsInstance(result, dict)
+
+    def test_create_keyboard_profile(self):
+        cfg = config._make_default_v5()
+        with patch("core.config.save_config"):
+            config.create_profile(cfg, "gaming", label="Gaming", device="keyboard")
+        self.assertIn("gaming", cfg["devices"]["keyboard"]["profiles"])
+
+    def test_delete_keyboard_profile(self):
+        cfg = config._make_default_v5()
+        cfg["devices"]["keyboard"]["profiles"]["gaming"] = {"label": "Gaming", "apps": [], "mappings": {}}
+        cfg["devices"]["keyboard"]["active_profile"] = "gaming"
+        with patch("core.config.save_config"):
+            config.delete_profile(cfg, "gaming", device="keyboard")
+        self.assertNotIn("gaming", cfg["devices"]["keyboard"]["profiles"])
+        self.assertEqual(cfg["devices"]["keyboard"]["active_profile"], "default")
+
+    def test_get_profile_for_app_keyboard(self):
+        cfg = config._make_default_v5()
+        cfg["devices"]["keyboard"]["profiles"]["code"] = {"label": "VS Code", "apps": ["Code.exe"], "mappings": {}}
+        result = config.get_profile_for_app(cfg, "Code.exe", device="keyboard")
+        self.assertEqual(result, "code")
 
 
 if __name__ == "__main__":
