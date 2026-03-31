@@ -133,20 +133,21 @@ class BackendKeyboardPropertyTests(unittest.TestCase):
 
     # -- Keyboard mappings --
 
-    def test_keyboard_buttons_empty_by_default(self):
+    def test_keyboard_buttons_shows_all_remappable_by_default(self):
         backend = self._make_backend()
-        self.assertEqual(backend.keyboardButtons, [])
+        buttons = backend.keyboardButtons
+        # Should show all MX Mechanical remappable keys (minus non-divertable)
+        self.assertTrue(len(buttons) > 30)  # MX Mechanical has 36 divertable keys
 
     def test_keyboard_buttons_excludes_non_divertable(self):
-        cfg = _v5_config_with_keyboard_mappings()
-        backend = self._make_backend(cfg)
+        backend = self._make_backend()
         buttons = backend.keyboardButtons
         keys = [b["key"] for b in buttons]
-        # F1 and F2 should appear; Fn and Fn Lock should be filtered out
-        self.assertIn("00C8", keys)
-        self.assertIn("00C9", keys)
-        self.assertNotIn("00D1", keys)
-        self.assertNotIn("00D2", keys)
+        # Non-divertable CIDs should be filtered out
+        self.assertNotIn("0x00D1", keys)  # Host Switch Ch1
+        self.assertNotIn("0x00D2", keys)  # Host Switch Ch2
+        self.assertNotIn("0x00DE", keys)  # F Lock
+        self.assertNotIn("0x0034", keys)  # Fn Key
 
     def test_keyboard_buttons_contain_expected_fields(self):
         cfg = _v5_config_with_keyboard_mappings()

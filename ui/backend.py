@@ -354,19 +354,31 @@ class Backend(QObject):
 
     @Property(list, notify=keyboardMappingsChanged)
     def keyboardButtons(self):
-        from core.logi_keyboards import CID_DISPLAY_NAMES, NON_DIVERTABLE_CIDS
+        """List ALL remappable keys for the connected keyboard, with current mappings."""
+        from core.logi_keyboards import (
+            CID_DISPLAY_NAMES, NON_DIVERTABLE_CIDS,
+            MX_MECHANICAL_CIDS, MX_MECHANICAL_MINI_CIDS,
+            resolve_keyboard,
+        )
         mappings = get_active_mappings(self._cfg, device="keyboard")
+
+        # Determine which CID set to show based on connected keyboard
+        all_cids = MX_MECHANICAL_CIDS  # default to full-size
+        if self._engine and hasattr(self._engine, 'connected_keyboard'):
+            kb = self._engine.connected_keyboard
+            if kb and hasattr(kb, 'key'):
+                if 'mini' in kb.key:
+                    all_cids = MX_MECHANICAL_MINI_CIDS
+
         result = []
-        for cid_hex, action_id in mappings.items():
-            try:
-                cid = int(cid_hex, 16)
-            except (ValueError, TypeError):
-                continue
+        for cid, friendly_name in all_cids.items():
             if cid in NON_DIVERTABLE_CIDS:
                 continue
+            cid_hex = f"0x{cid:04X}"
+            action_id = mappings.get(cid_hex, "none")
             result.append({
                 "key": cid_hex,
-                "name": CID_DISPLAY_NAMES.get(cid, f"Key 0x{cid:04X}"),
+                "name": CID_DISPLAY_NAMES.get(cid, friendly_name),
                 "actionId": action_id,
                 "actionLabel": _action_label(action_id),
             })
