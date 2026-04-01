@@ -417,7 +417,15 @@ class Engine:
         self._enabled = bool(enabled)
 
     def _try_bolt_multiplexer(self):
-        """Try to open a shared Bolt receiver connection for both devices."""
+        """Try to open a shared Bolt receiver connection for both devices.
+
+        Currently disabled: IOKit threading prevents reliable device probing
+        from the main thread. The probe reads return empty because
+        CFRunLoopRunInMode only works on the thread that scheduled the device.
+        TODO: Move probing to a background thread to fix this.
+        """
+        return  # disabled until IOKit threading is resolved
+
         from core.hidpp import FEAT_BACKLIGHT2, FEAT_REPROG_V4
         mux = BoltMultiplexer()
         if not mux.open():

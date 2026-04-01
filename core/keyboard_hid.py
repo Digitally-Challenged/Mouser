@@ -52,8 +52,11 @@ except ImportError:
 # BLE PIDs for direct Bluetooth connection
 KEYBOARD_BLE_PIDS: frozenset = frozenset({0xB366, 0xB367})
 
-# PIDs we should try (BLE direct + Bolt receiver which multiplexes devices)
-KEYBOARD_CANDIDATE_PIDS: frozenset = frozenset({0xB366, 0xB367, BOLT_RECEIVER_PID})
+# PIDs we should try — BLE direct only for now.
+# Bolt receiver (0xC548) is excluded because both mouse and keyboard listeners
+# cannot share the same IOKit handle. The BoltMultiplexer in engine.py handles
+# Bolt sharing when it successfully probes device indices.
+KEYBOARD_CANDIDATE_PIDS: frozenset = frozenset({0xB366, 0xB367})
 
 
 # ── Listener class ───────────────────────────────────────────────
